@@ -4,10 +4,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Central runtime configuration for the backend.
- * Minimal for Phase 0; grows in later phases (repos, plugin runtime, streams).
+ * Runtime configuration for the whole backend (server + plugin-runtime).
  */
-object Config {
+object RuntimeConfig {
     val dataDir: Path = Path.of(
         System.getenv("CS_WEB_DATA_DIR") ?: "${System.getProperty("user.home")}/.cloudstream-web"
     )
@@ -19,6 +18,8 @@ object Config {
     val lanMode: Boolean = System.getenv("CS_WEB_LAN") == "1"
 
     val host: String = if (lanMode) "0.0.0.0" else "127.0.0.1"
+
+    val dataBase: Path get() = dataDir.resolve("db.sqlite")
 
     fun ensureDataDir(): Path {
         Files.createDirectories(dataDir.resolve("Extensions"))

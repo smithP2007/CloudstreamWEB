@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.sqlite.jdbc)
 
     testImplementation(libs.junit.jupiter)
+    testImplementation(libs.coroutines.test)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

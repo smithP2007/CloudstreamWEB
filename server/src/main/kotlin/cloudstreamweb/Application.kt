@@ -1,50 +1,73 @@
 package cloudstreamweb
 
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
 import io.ktor.server.routing.get
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import java.nio.file.Files
+import java.nio.file.Path
 
-private const val APP_VERSION = "0.1.0-phase0"
+@Serializable
+data class HealthBody(val ok: Boolean, val version: String, val libraryAvailable: String)
+
+private const val APP_VERSION = "0.2.0-phase1"
+
+/** Small indirection so the static setup stays testable without Ktor. */
+object PathProvider {
+    fun spaDirectory(): Path? {
+        // 1) explicit override (used by scripts/run.sh)
+        System.getenv("CS_WEB_STATIC_DIR")?.let { p ->
+            if (Files.isDirectory(Path.of(p))) return Path.of(p)
+        }
+        // 2) conventional locations relative to repo root / working dir
+        val candidates = listOf(
+            Path.of("web/dist"),
+            Path.of("../web/dist"),
+        )
+        return candidates.firstOrNull { Files.isDirectory(it) }
+    }
+}
 
 /**
- * Phase 0 entry point.
- * Minimal but functional: boots Ktor, exposes /api/health, and serves the SPA
- * from web/dist when present. Sidebar/pages become real in later phases.
+ * Entry point. Boots Ktor on RuntimeConfig.host:port, exposes the API and
+ * serves the SPA from web/dist when it exists. API routes come FIRST so
+ * static fallback never shadows them.
  */
 fun main() {
-    val dataDir = Config.ensureDataDir()
-    System.err.println("cloud-stream-web $APP_VERSION starting; data dir: $dataDir; binding ${Config.host}:${Config.port}")
+    val dataDir = RuntimeConfig.ensureDataDir()
+    System.err.println("cloud-stream-web $APP_VERSION starting; data dir: $dataDir; binding ${RuntimeConfig.host}:${RuntimeConfig.port}")
 
-    val staticRoot = PathProvider.spaDirectory() // java.nio.file.Path to web/dist (may be null)
+    // Fail fast if the upstream artifact is broken/missing
+    val probe = ApiProbe.probe()
+    check(probe.ok) { "Upstream plugin API failed to load: ${probe.detail}" }
+
+    val staticRoot = PathProvider.spaDirectory()
 
     embeddedServer(
         Netty,
-        host = Config.host,
-        port = Config.port,
+        host = RuntimeConfig.host,
+        port = RuntimeConfig.port,
         watchPaths = emptyList(),
     ) {
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
+        }
+
         routing {
             get("/api/health") {
-                // Force-load the upstream plugin API classes here so a missing/incompatible
-                // artifact fails loudly at startup instead of at plugin load time.
-                val apiProbe = ApiProbe.probe()
-                call.respondText(
-                    Json.encodeToString(
-                        buildJsonObject {
-                            put("ok", apiProbe.ok)
-                            put("version", APP_VERSION)
-                            put("libraryAvailable", apiProbe.detail)
-                        }
-                    ),
-                    io.ktor.http.ContentType.Application.Json
-                )
+                call.respond(HealthBody(ok = true, version = APP_VERSION, libraryAvailable = probe.detail))
             }
+
+            cloudstreamweb.routes.RepoRoutes.install(this)
 
             if (staticRoot != null) {
                 Spas.addSpaRouting(this, staticRoot)
@@ -53,26 +76,10 @@ fun main() {
                     call.respondText(
                         "cloud-stream-web backend is running, but web/dist was not built yet.\n" +
                             "Run scripts/run.sh (or: cd web && npm i && npm run build).",
-                        io.ktor.http.ContentType.Text.Plain
+                        ContentType.Text.Plain
                     )
                 }
             }
         }
     }.start(wait = true)
-}
-
-/** Small indirection so the static setup stays testable without Ktor. */
-private object PathProvider {
-    fun spaDirectory(): java.nio.file.Path? {
-        // 1) explicit override (used by scripts/run.sh)
-        System.getenv("CS_WEB_STATIC_DIR")?.let { p ->
-            if (Files.isDirectory(java.nio.file.Path.of(p))) return java.nio.file.Path.of(p)
-        }
-        // 2) conventional location relative to repo root / application dir
-        val candidates = listOf(
-            java.nio.file.Path.of("web/dist"),
-            java.nio.file.Path.of("../web/dist"),
-        )
-        return candidates.firstOrNull { Files.isDirectory(it) }
-    }
 }

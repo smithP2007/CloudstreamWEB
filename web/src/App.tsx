@@ -1,10 +1,10 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import ReposPage from "./pages/ReposPage";
+import { getHealth } from "./lib/api";
 
 async function fetchHealth(): Promise<{ ok: boolean; version: string; libraryAvailable: string }> {
-  const res = await fetch("/api/health");
-  if (!res.ok) throw new Error(`health ${res.status}`);
-  return res.json();
+  return getHealth();
 }
 
 const NAV = [
@@ -49,7 +49,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/search" element={<Placeholder title="Search" />} />
-          <Route path="/repos" element={<Placeholder title="Repositories" />} />
+          <Route path="/repos" element={<ReposPage />} />
           <Route path="/library" element={<Placeholder title="Library" />} />
           <Route path="/settings" element={<Placeholder title="Settings" />} />
           <Route path="*" element={<NotFound />} />
