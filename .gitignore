@@ -1,0 +1,21 @@
+# Build
+.gradle/
+build/
+.kotlin/
+
+# Node / web
+web/node_modules/
+web/dist/
+
+# Runtime data
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Tools vendored at bootstrap (see scripts/bootstrap.sh)
+plugin-runtime/tools/
+
+# IDE
+.idea/
+*.iml
