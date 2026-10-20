@@ -107,13 +107,16 @@ object RepoRoutes {
             }
             try {
                 val plugins = withContext(Dispatchers.IO) { fetcher.repoPlugins(manifestUrl) }
-                // installed-state lookup lands here in Phase 2 (registry)
+                val states = withContext(Dispatchers.IO) { Db.listInstalled() }.associateBy { it.internalName }
                 call.respond(plugins.map { p ->
+                    val inst = states[p.internalName]
                     PluginView(
                         url = p.url, name = p.name, internalName = p.internalName,
                         status = p.status, version = p.version, apiVersion = p.apiVersion,
                         language = p.language, iconUrl = p.iconUrl, description = p.description,
                         tvTypes = p.tvTypes, authors = p.authors,
+                        installed = inst?.loadState == "LOADED",
+                        loadState = inst?.loadState ?: "NONE",
                     )
                 })
             } catch (t: Throwable) {

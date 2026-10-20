@@ -30,10 +30,11 @@ fi
 # --- submodule ----------------------------------------------------------------
 (cd "$PROJECT_DIR" && git submodule update --init --depth 1 upstream 2>/dev/null || true)
 
-# --- enjarify (dex->jar, phase 2) ---------------------------------------------
+# --- enjarify (dex->jar, needed for .cs3 loading) ------------------------------
 mkdir -p "$PROJECT_DIR/plugin-runtime/tools"
 if [ ! -d "$PROJECT_DIR/plugin-runtime/tools/enjarify" ]; then
-  echo "DOWNLOADME enjarify" # downloaded in phase 2 once the loader needs it
+  echo "cloning google/enjarify (pure python, Apache-2.0)"
+  git clone -q --depth 1 https://github.com/google/enjarify "$PROJECT_DIR/plugin-runtime/tools/enjarify"
 fi
 
 # --- web deps -----------------------------------------------------------------

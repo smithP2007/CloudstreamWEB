@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import ReposPage from "./pages/ReposPage";
-import { getHealth } from "./lib/api";
+import { getHealth, getProviders } from "./lib/api";
 
 async function fetchHealth(): Promise<{ ok: boolean; version: string; libraryAvailable: string }> {
   return getHealth();
@@ -60,16 +60,29 @@ export default function App() {
 }
 
 function Home() {
+  const providers = useQuery({ queryKey: ["providers"], queryFn: getProviders });
+
   return (
     <section>
       <h1>Home</h1>
       <p className="muted">
         Provider-driven rows will appear here once a repository is installed.
       </p>
-      <p className="muted">
-        Next step in the build (Phase 2): install the upstream extensions repo and load real
-        CloudStream plugins against this JVM backend.
-      </p>
+      <h2>Active providers ({providers.data?.length ?? "…"})</h2>
+      {providers.isPending && <p className="muted">Loading…</p>}
+      {providers.isError && <p className="muted">Providers unavailable.</p>}
+      {providers.data?.length === 0 && (
+        <p className="muted">No providers loaded — install one from the Repositories page.</p>
+      )}
+      {providers.data?.map((p) => (
+        <div className="card row" key={p.mainUrl + p.name}>
+          <div>
+            <div className="repo-name">{p.name}</div>
+            <div className="muted small mono">{p.mainUrl} · {p.javaType}</div>
+          </div>
+          <div className="small">{p.tvTypes.join(", ")}</div>
+        </div>
+      ))}
     </section>
   );
 }

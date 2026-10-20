@@ -11,6 +11,9 @@ kotlin {
 dependencies {
     implementation(project(":plugin-runtime"))
 
+    // Declared directly because routes reference APIHolder/MainAPI themselves
+    implementation(libs.cs.library)
+
     implementation(platform(libs.ktor.bom))
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)

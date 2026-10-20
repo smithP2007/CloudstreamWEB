@@ -30,3 +30,19 @@
   `import io.ktor.server.response.respond`; cs.repo URLs pass through unchanged
   (redirector domain); RepoUrl deviation: surviving `cloudstreamrepo://` prefix is
   stripped in resolve() so results are always fetchable
+
+## Gate 2 — PASSED (phase 2: extension install & load)
+- [x] Full pipeline live: POST /api/plugins/install -> DOWNLOAD -> VERIFY (sha256 vs
+      plugins.json fileHash) -> EXTRACT -> CONVERT (enjarify) -> LOAD -> DONE job model
+- [x] Five real official .cs3 plugins loaded on JVM: YoutubeProvider, TwitchProvider,
+      DailymotionProvider, InternetArchiveProvider, InvidiousProvider — 0 missing symbols
+      (stub-inventory.md updated with runtime table)
+- [x] /api/providers lists registered providers w/ sourcePlugin; hasMainPage MainAPI +
+      ExtractorApi registrations both observed
+- [x] Uninstall: beforeUnload + provider/extractor removal + loader close (verified live)
+- [x] Restart restore: restoreAll() reloads installed plugins from converted-jar cache
+      without re-download (verified live; Twitch re-registered after restart)
+- [x] UI: Install/Remove buttons with live job progress (stage+% via polling), installed
+      badge comes from /api/repos/{b64}/plugins join with DB installed state
+- Notes: server compile needs libs.cs.library declared (implementation transitivity);
+  dexes.add not += inside when branch (List.plus fallback trap)

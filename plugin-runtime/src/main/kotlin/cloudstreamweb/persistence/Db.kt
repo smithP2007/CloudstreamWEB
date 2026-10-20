@@ -104,4 +104,99 @@ object Db {
             ps.executeUpdate()
         }
     }
+
+    // ---- installed plugins ---------------------------------------------------
+
+    data class InstalledRow(
+        val internalName: String,
+        val repositoryUrl: String,
+        val pluginUrl: String,
+        val version: Int,
+        val fileHash: String?,
+        val filePath: String,
+        val entryClass: String,
+        val pluginName: String,
+        val loadState: String,
+        val loadDetail: String?,
+    )
+
+    fun upsertInstalled(
+        internalName: String,
+        repositoryUrl: String,
+        pluginUrl: String,
+        version: Int,
+        fileHash: String?,
+        filePath: String,
+        entryClass: String,
+        pluginName: String,
+        loadState: String,
+        loadDetail: String?,
+    ) {
+        conn.prepareStatement(
+            """
+            INSERT INTO installed_plugins(internal_name, repository_url, plugin_url, version, file_hash, file_path, entry_class, plugin_name, load_state, load_detail, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(internal_name) DO UPDATE SET
+                repository_url=excluded.repository_url, plugin_url=excluded.plugin_url,
+                version=excluded.version, file_hash=excluded.file_hash, file_path=excluded.file_path,
+                entry_class=excluded.entry_class, plugin_name=excluded.plugin_name,
+                load_state=excluded.load_state, load_detail=excluded.load_detail,
+                updated_at=CURRENT_TIMESTAMP
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, internalName)
+            ps.setString(2, repositoryUrl)
+            ps.setString(3, pluginUrl)
+            ps.setInt(4, version)
+            ps.setString(5, fileHash)
+            ps.setString(6, filePath)
+            ps.setString(7, entryClass)
+            ps.setString(8, pluginName)
+            ps.setString(9, loadState)
+            ps.setString(10, loadDetail)
+            ps.executeUpdate()
+        }
+    }
+
+    fun listInstalled(): List<InstalledRow> {
+        conn.createStatement().use { st ->
+            val rs = st.executeQuery(
+                "SELECT internal_name, repository_url, plugin_url, version, file_hash, file_path, entry_class, plugin_name, load_state, load_detail FROM installed_plugins ORDER BY internal_name"
+            )
+            val out = mutableListOf<InstalledRow>()
+            while (rs.next()) {
+                out += InstalledRow(
+                    internalName = rs.getString(1),
+                    repositoryUrl = rs.getString(2),
+                    pluginUrl = rs.getString(3),
+                    version = rs.getInt(4),
+                    fileHash = rs.getString(5),
+                    filePath = rs.getString(6),
+                    entryClass = rs.getString(7),
+                    pluginName = rs.getString(8),
+                    loadState = rs.getString(9) ?: "NONE",
+                    loadDetail = rs.getString(10),
+                )
+            }
+            return out
+        }
+    }
+
+    fun setLoadState(internalName: String, state: String, detail: String?) {
+        conn.prepareStatement(
+            "UPDATE installed_plugins SET load_state = ?, load_detail = ?, updated_at = CURRENT_TIMESTAMP WHERE internal_name = ?"
+        ).use { ps ->
+            ps.setString(1, state)
+            ps.setString(2, detail)
+            ps.setString(3, internalName)
+            ps.executeUpdate()
+        }
+    }
+
+    fun deleteInstalled(internalName: String) {
+        conn.prepareStatement("DELETE FROM installed_plugins WHERE internal_name = ?").use { ps ->
+            ps.setString(1, internalName)
+            ps.executeUpdate()
+        }
+    }
 }

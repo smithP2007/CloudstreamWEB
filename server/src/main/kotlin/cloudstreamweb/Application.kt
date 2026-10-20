@@ -50,6 +50,9 @@ fun main() {
     val probe = ApiProbe.probe()
     check(probe.ok) { "Upstream plugin API failed to load: ${probe.detail}" }
 
+    // Reload previously-installed plugins in the background
+    cloudstreamweb.plugins.ExtensionRuntime.restoreAll()
+
     val staticRoot = PathProvider.spaDirectory()
 
     embeddedServer(
@@ -68,6 +71,7 @@ fun main() {
             }
 
             cloudstreamweb.routes.RepoRoutes.install(this)
+            cloudstreamweb.routes.PluginRoutes.install(this)
 
             if (staticRoot != null) {
                 Spas.addSpaRouting(this, staticRoot)

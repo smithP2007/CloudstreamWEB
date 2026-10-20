@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { API_BASE } from "../lib/api";
+import { getProviders, json } from "../lib/api";
 
 type CatalogEntry = { url: string; verified: boolean };
 type RepoEntry = {
@@ -22,6 +22,8 @@ type PluginView = {
   description?: string | null;
   tvTypes?: string[] | null;
   authors: string[];
+  installed: boolean;
+  loadState: string;
 };
 
 /** Java-side uses Base64.getUrlEncoder().withoutPadding() */
@@ -35,23 +37,6 @@ const STATUS_LABEL: Record<number, string> = {
   2: "slow",
   3: "beta",
 };
-
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    ...init,
-    headers: init?.body ? { "Content-Type": "application/json", ...(init?.headers ?? {}) } : init?.headers,
-  });
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const body = await res.json();
-      detail = body.detail ? `: ${body.detail}` : "";
-    } catch { /* ignore */ }
-    throw new Error(`${res.status}${detail}`);
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json();
-}
 
 export default function ReposPage() {
   const qc = useQueryClient();
@@ -207,10 +192,65 @@ function RepoRow({
 }
 
 function PluginTable({ repoUrl }: { repoUrl: string }) {
+  const qc = useQueryClient();
   const plugins = useQuery({
     queryKey: ["plugins", repoUrl],
     queryFn: () => json<PluginView[]>(`/api/repos/${b64url(repoUrl)}/plugins`),
   });
+
+  const [jobs, setJobs] = useState<Record<string, string>>({});
+  const activeCount = Object.keys(jobs).length;
+
+  const jobsQ = useQuery({
+    queryKey: ["jobs", jobIdsKey(jobs)],
+    enabled: activeCount > 0,
+    refetchInterval: 1000,
+    queryFn: async () => {
+      const out: Record<string, { stage: string; progress: number; error: string | null }> = {};
+      for (const [name, id] of Object.entries(jobs)) {
+        try {
+          out[name] = await json(`/api/plugins/install/${id}`);
+        } catch { /* job vanished; ignore */ }
+      }
+      return out;
+    },
+  });
+
+  // react to finished jobs: clear them and refresh plugin/provider state
+  useEffect(() => {
+    if (!jobsQ.data) return;
+    const finished = Object.entries(jobsQ.data).filter(
+      ([, j]) => j.stage === "DONE" || j.stage === "FAILED"
+    );
+    if (finished.length === 0) return;
+    setJobs((prev) => {
+      const next = { ...prev };
+      for (const [name] of finished) delete next[name];
+      return next;
+    });
+    qc.invalidateQueries({ queryKey: ["plugins", repoUrl] });
+    qc.invalidateQueries({ queryKey: ["providers"] });
+  }, [jobsQ.data]);
+
+  const uninstall = useMutation({
+    mutationFn: (internalName: string) =>
+      json("/api/plugins/uninstall", {
+        method: "POST",
+        body: JSON.stringify({ internalName }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["plugins", repoUrl] });
+      qc.invalidateQueries({ queryKey: ["providers"] });
+    },
+  });
+
+  const startInstall = async (internalName: string) => {
+    const res = await json<{ jobId: string }>("/api/plugins/install", {
+      method: "POST",
+      body: JSON.stringify({ repositoryUrl: repoUrl, internalName }),
+    });
+    setJobs((prev) => ({ ...prev, [internalName]: res.jobId }));
+  };
 
   if (plugins.isPending) return <p className="muted">Loading plugins…</p>;
   if (plugins.isError) return <p className="bad">Failed to load plugin list.</p>;
@@ -225,32 +265,62 @@ function PluginTable({ repoUrl }: { repoUrl: string }) {
           <th>Lang</th>
           <th>Status</th>
           <th>Ver</th>
-          <th>Installed</th>
+          <th>State</th>
         </tr>
       </thead>
       <tbody>
-        {plugins.data.map((p) => (
-          <tr key={p.internalName + p.url}>
-            <td>
-              <div>{p.name}</div>
-              <div className="muted small">{p.description ?? p.internalName}</div>
-            </td>
-            <td className="small">{(p.tvTypes ?? []).join(", ") || "—"}</td>
-            <td className="small">{p.language ?? "—"}</td>
-            <td>
-              <span className={`badge ${p.status === 1 ? "good" : p.status === 0 ? "bad" : ""}`}>
-                {STATUS_LABEL[p.status] ?? String(p.status)}
-              </span>
-            </td>
-            <td className="small mono">{p.version}</td>
-            <td>
-              <span className="badge muted-badge" title="Installation arrives in Phase 2">
-                not yet
-              </span>
-            </td>
-          </tr>
-        ))}
+        {plugins.data.map((p) => {
+          const job = jobsQ.data?.[p.internalName];
+          const busy = job !== undefined && job.stage !== "DONE" && job.stage !== "FAILED";
+          const failedJob = job?.stage === "FAILED";
+          return (
+            <tr key={p.internalName + p.url}>
+              <td>
+                <div>{p.name}</div>
+                <div className="muted small">{p.description ?? p.internalName}</div>
+                {failedJob && <div className="bad small">install failed: {job?.error}</div>}
+              </td>
+              <td className="small">{(p.tvTypes ?? []).join(", ") || "—"}</td>
+              <td className="small">{p.language ?? "—"}</td>
+              <td>
+                <span className={`badge ${p.status === 1 ? "good" : p.status === 0 ? "bad" : ""}`}>
+                  {STATUS_LABEL[p.status] ?? String(p.status)}
+                </span>
+              </td>
+              <td className="small mono">{p.version}</td>
+              <td>
+                {busy ? (
+                  <span className="badge" title={`stage: ${job?.stage}`}>
+                    {job?.progress}% {job?.stage?.toLowerCase()}
+                  </span>
+                ) : p.installed ? (
+                  <div className="row gap">
+                    <span className="badge good">loaded</span>
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => uninstall.mutate(p.internalName)}
+                      disabled={uninstall.isPending}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => startInstall(p.internalName)} disabled={uninstall.isPending}>
+                    Install
+                  </button>
+                )}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
+}
+
+function jobIdsKey(jobs: Record<string, string>): string {
+  return Object.entries(jobs)
+    .map(([k, v]) => `${k}:${v}`)
+    .join("|") || "none";
 }

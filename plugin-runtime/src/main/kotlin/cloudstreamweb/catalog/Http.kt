@@ -19,6 +19,10 @@ data class HttpResp(val status: Int, val headers: Map<String, String>, val body:
 
 interface Http {
     suspend fun get(url: String, redirect: Boolean = true): HttpResp
+
+    /** Raw binary download (plugin .cs3 files). Default: unsupported for stubs. */
+    suspend fun getBytes(url: String): ByteArray =
+        throw UnsupportedOperationException("getBytes not implemented by this stub")
 }
 
 class OkHttp : Http {
@@ -40,6 +44,14 @@ class OkHttp : Http {
         cli.newCall(req).execute().use { resp ->
             val headers = resp.headers.toMultimap().mapValues { it.value.firstOrNull() ?: "" }.mapKeys { it.key.lowercase() }
             HttpResp(resp.code, headers, resp.body?.string() ?: "")
+        }
+    }
+
+    override suspend fun getBytes(url: String): ByteArray = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(url).get().build()
+        client.newCall(req).execute().use { resp ->
+            check(resp.code == 200) { "download failed ${resp.code} for $url" }
+            resp.body?.bytes() ?: ByteArray(0)
         }
     }
 }
