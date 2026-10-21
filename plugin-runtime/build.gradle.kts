@@ -12,6 +12,8 @@ dependencies {
     // MainAPI, ExtractorApi, APIHolder...). Resolves the JVM variant of the
     // Kotlin Multiplatform artifact via Gradle Module Metadata.
     implementation(libs.cs.library)
+    implementation(libs.nicehttp)
+    implementation("com.github.teamnewpipe:NewPipeExtractor:v0.26.3")
 
     // Same versions as official extension builds (see upstream extension template);
     // these end up on our classpath so plugin bytecode can link against them.

@@ -6,6 +6,8 @@ import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.request.path
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
@@ -65,6 +67,29 @@ fun main() {
             json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
         }
 
+        // Typed error contract for the SPA + full stack traces in the server log
+        install(StatusPages) {
+            exception<cloudstreamweb.routes.ProviderException> { call, cause ->
+                val status = when (cause.kind) {
+                    "REPO_INVALID" -> HttpStatusCode.BadRequest
+                    "PROVIDER_NOT_FOUND", "ENTRY_NOT_FOUND" -> HttpStatusCode.NotFound
+                    else -> HttpStatusCode.BadGateway
+                }
+                call.respond(status, cloudstreamweb.routes.ErrorBody(cause.kind, cause.message))
+            }
+            exception<Throwable> { call, cause ->
+                System.err.println("[api-error] ${call.request.path()}")
+                cause.printStackTrace()
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    cloudstreamweb.routes.ErrorBody(
+                        "INTERNAL",
+                        (cause.message ?: cause.javaClass.simpleName).take(300),
+                    )
+                )
+            }
+        }
+
         routing {
             get("/api/health") {
                 call.respond(HealthBody(ok = true, version = APP_VERSION, libraryAvailable = probe.detail))
@@ -72,6 +97,8 @@ fun main() {
 
             cloudstreamweb.routes.RepoRoutes.install(this)
             cloudstreamweb.routes.PluginRoutes.install(this)
+            cloudstreamweb.routes.ContentRoutes.install(this)
+            cloudstreamweb.routes.StreamProxy.install(this)
 
             if (staticRoot != null) {
                 Spas.addSpaRouting(this, staticRoot)

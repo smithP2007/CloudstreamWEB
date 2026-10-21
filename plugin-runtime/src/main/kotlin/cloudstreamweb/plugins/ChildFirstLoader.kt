@@ -13,6 +13,9 @@ class ChildFirstLoader(
     parent: ClassLoader,
 ) : URLClassLoader(urls.toTypedArray(), parent) {
 
+    /** Test-visible local lookup (protected findClass wrapper). */
+    fun findLocal(name: String): Class<*> = findClass(name)
+
     override fun loadClass(name: String, resolve: Boolean): Class<*> {
         val loaded = findLoadedClass(name)
         if (loaded != null) return loaded

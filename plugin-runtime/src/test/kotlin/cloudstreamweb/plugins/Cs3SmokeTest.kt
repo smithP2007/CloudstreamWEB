@@ -50,22 +50,3 @@ class Cs3SmokeTest {
         plugin.beforeUnload()
     }
 }
-
-/**
- * Child-first URLClassLoader: plugin-bundled classes win over parent classes for
- * plugin-owned packages, while com.lagradost/android stubs resolve via parent.
- */
-class ChildFirstLoader(
-    urls: List<java.net.URL>,
-    parent: ClassLoader,
-) : URLClassLoader(urls.toTypedArray(), parent) {
-    override fun loadClass(name: String, resolve: Boolean): Class<*> {
-        // find locally first (child-first)
-        val loaded = findLoadedClass(name)
-        if (loaded != null) return loaded
-        val selfFound = try { findClass(name) } catch (t: ClassNotFoundException) { null }
-        val resolved = selfFound ?: parent.loadClass(name)
-        if (resolve) resolveClass(resolved)
-        return resolved
-    }
-}

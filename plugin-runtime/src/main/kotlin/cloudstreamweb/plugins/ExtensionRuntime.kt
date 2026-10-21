@@ -8,6 +8,7 @@ import cloudstreamweb.persistence.Db
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.plugins.BasePlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +35,12 @@ import java.util.zip.ZipFile
  *   happens inside the plugin (registerMainAPI into APIHolder).
  */
 object ExtensionRuntime {
+
+    init {
+        // Providers using NewPipeExtractor (e.g. YoutubeProvider) need the global
+        // downloader configured before any of their suspend calls run.
+        NewPipeBridge.initOnce()
+    }
 
     sealed interface Stage {
         data object Queued : Stage
@@ -208,8 +215,16 @@ object ExtensionRuntime {
         val filename = "$internalName-$version"
         plugin.filename = filename
         try {
-            plugin.load()
+            when (plugin) {
+                // App-module flavor: entry point is load(context) — our headless
+                // Plugin stub routes an unmodified call to load() when the plugin
+                // did not override it (upstream semantics).
+                is Plugin -> plugin.load(cloudstreamweb.plugins.HeadlessSharedContext)
+                else -> plugin.load()
+            }
         } catch (t: Throwable) {
+            System.err.println("[plugin-load] $filename failed:")
+            t.printStackTrace()
             try { (loader as? ChildFirstLoader)?.close() } catch (_: Exception) { }
             // mirror upstream: a partially-loaded plugin must not stay live
             throw IllegalStateException("load() failed for $filename: ${t.message}", t)

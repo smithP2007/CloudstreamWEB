@@ -11,10 +11,12 @@ junitJupiter = "5.11.4"
 jackson = "2.13.1"   # upstream: do not bump, keeps parity with extension builds
 okhttp = "4.12.0"
 csLibrary = "4.8.0"  # JitPack-published upstream :library (JitPack build verified "ok")
+nicehttp = "0.4.18"  # library's HTTP layer (com.lagradost.cloudstream3.app)
 
 [libraries]
 # The published CloudStream plugin API surface (BasePlugin, CloudstreamPlugin, MainAPI, ...)
 cs-library = { module = "com.github.recloudstream.cloudstream:library", version.ref = "csLibrary" }
+nicehttp = { module = "com.github.Blatzar:NiceHttp", version.ref = "nicehttp" }
 jackson = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }

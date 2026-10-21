@@ -19,6 +19,7 @@ dependencies {
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
+    implementation("io.ktor:ktor-server-status-pages")
 
     // Transitively present via :plugin-runtime (cs-library etc.), declared
     // explicitly because the server touches okhttp and jackson directly too.

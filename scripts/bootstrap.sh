@@ -30,11 +30,18 @@ fi
 # --- submodule ----------------------------------------------------------------
 (cd "$PROJECT_DIR" && git submodule update --init --depth 1 upstream 2>/dev/null || true)
 
-# --- enjarify (dex->jar, needed for .cs3 loading) ------------------------------
+# --- dex2jar (dex->jar WITH annotations, needed for .cs3 loading) ---------------
+# enjarify alone drops annotations which breaks @JsonProperty-based providers.
 mkdir -p "$PROJECT_DIR/plugin-runtime/tools"
-if [ ! -d "$PROJECT_DIR/plugin-runtime/tools/enjarify" ]; then
-  echo "cloning google/enjarify (pure python, Apache-2.0)"
-  git clone -q --depth 1 https://github.com/google/enjarify "$PROJECT_DIR/plugin-runtime/tools/enjarify"
+if [ ! -f "$PROJECT_DIR/plugin-runtime/tools/dex2jar/d2j-dex2jar.sh" ]; then
+  echo "downloading pxb1988/dex2jar v2.4 (Apache-2.0)"
+  curl -sL -o /tmp/dex-tools.zip "https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip"
+  unzip -oq /tmp/dex-tools.zip -d /tmp/dex-tools-x
+  rm -rf "$PROJECT_DIR/plugin-runtime/tools/dex2jar"
+  mkdir -p "$PROJECT_DIR/plugin-runtime/tools/dex2jar"
+  cp -r /tmp/dex-tools-x/dex-tools-v2.4/. "$PROJECT_DIR/plugin-runtime/tools/dex2jar/"
+  chmod +x "$PROJECT_DIR/plugin-runtime/tools/dex2jar/"*.sh
+  rm -rf /tmp/dex-tools.zip /tmp/dex-tools-x
 fi
 
 # --- web deps -----------------------------------------------------------------

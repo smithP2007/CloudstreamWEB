@@ -46,3 +46,34 @@
       badge comes from /api/repos/{b64}/plugins join with DB installed state
 - Notes: server compile needs libs.cs.library declared (implementation transitivity);
   dexes.add not += inside when branch (List.plus fallback trap)
+
+## Gate 3 — PASSED (phase 3: content + streams + playback)
+- [x] NewPipeExtractor global downloader bridge (plugin-runtime/NewPipeBridge.kt; okhttp
+      Downloader implements `execute`) — fixes YoutubeProvider "downloader is null";
+      YouTube search 13-16 items, detail 143-ep channel lists resolved
+- [x] dex2jar replaces enjarify as primary converter (preserves annotations:
+      @JsonProperty data classes in community dexes parse -> Dailymotion/IA search back)
+- [x] StatusPages error contract + [provider-error] stderr logging (typed 400/404/502)
+- [x] Per-provider `mainUrl` override on home/search/detail/streams (upstream instance
+      parity; Invidious escape hatch — search proved 20 items on invidious.f5.si but
+      /api/v1/videos disabled on every healthy public instance today -> instance-dependent)
+- [x] StreamProxy GET /api/stream: header replay (base64url JSON `h`), Range passthrough,
+      identity encoding, m3u8 full recursive rewrite (keys/segments/variants)
+- [x] scripts/provider_matrix.py — home/search/detail/streams/playability per provider;
+      multi-candidate probe (first media content-type wins)
+- [x] Community plugins load: Plugin/CloudStreamApp/DataStore/AuthAPI/SyncAPI/SyncRepo/
+      AccountManager/SimklApi/CloudflareKiller/MainActivity/Event/Uri headless stubs
+      (evidence-driven member sets from javap of dex2jar-converged CSX classes) —
+      CineStream v487 load() full chain: 3 providers + 27 extractors registered;
+      Bollyflix, MoviesDrive, Moviesmod, VegaMovies, MegaRepo MegaProvider all DONE
+- [x] Result matrix 2026-10-22 (14 providers/10 plugins loaded):
+      playable end-to-end through proxy: Dailymotion, Internet Archive, Twitch, YouTube,
+      BollyFlix, CineStream, CineSimkl*, CineTmdb, MoviesDrive, Rogmovies
+      (*run-to-run variance on CineSimkl/IA — upstream sites rotate; documented)
+      not streamable today, source-side: Invidious (instance API disabled upstream),
+      Moviesmod/TopMovies/VegaMovies home (their mirrors dead/blocked today)
+- [x] Player UI: Browse (provider home rows), Search, Detail + episode strip, inline
+      <video> player — hls.js for M3U8 via playlist-rewriting proxy, native for VIDEO/FILE,
+      automatic candidate advance on media errors; verified in browser: BollyFlix movie
+      (R2 mp4 via proxy, currentTime advancing 30s+, 9655s duration) and Twitch live
+      (hls.js blob stream through rewritten m3u8 playlist, currentTime advancing 21s+)
