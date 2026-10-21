@@ -7,12 +7,24 @@ import java.sql.DriverManager
 
 /** Plain SQLite persistence (WAL) for repos/plugins/library state. */
 object Db {
-    private val conn: Connection by lazy {
-        RuntimeConfig.ensureDataDir()
-        Class.forName("org.sqlite.JDBC")
-        val c = DriverManager.getConnection("jdbc:sqlite:" + RuntimeConfig.dataBase)
-        c.createStatement().use { it.execute("PRAGMA journal_mode=WAL") }
-        c
+    @Volatile
+    private var connOrNull: Connection? = null
+
+    /** Reopen-on-demand single connection (WAL). */
+    private val conn: Connection
+        get() = connection()
+
+    private fun connection(): Connection {
+        connOrNull?.takeIf { !it.isClosed }?.let { return it }
+        synchronized(this) {
+            connOrNull?.takeIf { !it.isClosed }?.let { return it }
+            RuntimeConfig.ensureDataDir()
+            Class.forName("org.sqlite.JDBC")
+            val c = DriverManager.getConnection("jdbc:sqlite:" + RuntimeConfig.dataBase)
+            c.createStatement().use { it.execute("PRAGMA journal_mode=WAL") }
+            connOrNull = c
+            return c
+        }
     }
 
     init {
@@ -249,6 +261,47 @@ object Db {
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            // Plugin "SharedPreferences" persistence (Phase 5): headless plugins
+            // keep settings across restarts. Values are type-tagged by
+            // FakeSharedPreferences ("s:", "b:", "i:", "set:").
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS prefs(
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        }
+    }
+
+    /** Graceful-shutdown signal; later use reopens transparently. */
+    fun close() {
+        val c = connOrNull ?: return   // never opened -> nothing to close
+        runCatching { c.close() }
+        connOrNull = null
+    }
+
+    // ---- plugin prefs (headless SharedPreferences persistence) ----------------
+
+    /** All persisted plugin settings as raw type-tagged values. */
+    fun loadPrefs(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        connection().createStatement().use { st ->
+            st.executeQuery("SELECT key, value FROM prefs").use { rs ->
+                while (rs.next()) out[rs.getString(1)] = rs.getString(2)
+            }
+        }
+        return out
+    }
+
+    fun savePref(key: String, encoded: String) {
+        connection().prepareStatement(
+            "INSERT INTO prefs(key, value, updated_at) VALUES(?, ?, CURRENT_TIMESTAMP) " +
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        ).use { ps ->
+            ps.setString(1, key)
+            ps.setString(2, encoded)
+            ps.executeUpdate()
         }
     }
 

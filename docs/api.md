@@ -34,6 +34,14 @@ GET /api/subtitle?url=&h=                → WebVTT (SRT converted on the fly)
 
 Every content route accepts `mainUrl=` to override the provider instance.
 
+## Auth (Phase 5, optional)
+
+With `CS_WEB_LAN_TOKEN` set, every `/api` route except `/api/health`
+requires `Authorization: Bearer <token>` **or** `?token=<token>` (the query
+form is for `<video>`/`<track>` sources that cannot send headers). The SPA
+prompts once and re-tries with the stored token. Error shape:
+`401 {"error":"UNAUTHORIZED"}`.
+
 ## Library (Phase 4)
 
 SQLite-backed; lives in the user's data dir. Poster/type names mirror the

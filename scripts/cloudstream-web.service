@@ -1,0 +1,31 @@
+# systemd user unit for cloud-stream-web — Phase 5 packaging.
+#
+# Install (as the user who owns the package directory):
+#   1. unpack build/csweb.tar.gz to ~/opt/csweb  (so ~/opt/csweb/run.sh exists)
+#   2. mkdir -p ~/.config/systemd/user
+#   3. cp ~/opt/csweb/cloudstream-web.service ~/.config/systemd/user/
+#   4. systemctl --user daemon-reload
+#   5. systemctl --user enable --now cloudstream-web
+# Token/LAN options go into ~/.config/cloudstream-web/env (KEY=VALUE lines).
+#
+# journalctl --user -u cloudstream-web -f   for logs.
+
+[Unit]
+Description=CloudStream Web (Ktor backend running .cs3 extensions + SPA)
+Documentation=man:csweb
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/opt/csweb/run.sh
+EnvironmentFile=-%h/.config/cloudstream-web/env
+WorkingDirectory=%h/opt/csweb
+Restart=on-failure
+RestartSec=3
+# A crash mid-download is recoverable: stale RUNNING rows resume as PAUSED[boot].
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

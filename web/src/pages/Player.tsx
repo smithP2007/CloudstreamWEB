@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import type { StreamDto, SubtitleDto } from "../lib/api";
 import { createDownload, playbackCandidates, saveHistory, streamProxyUrl, subtitleProxyUrl } from "../lib/api";
+import { toastError } from "../lib/toast";
 
 /** What the library needs to attribute watch progress + downloads to an item. */
 export type PlayerMeta = {
@@ -84,6 +85,7 @@ export function Player({
       setDownloadState("queued ✓");
     } catch (e) {
       setDownloadState(`failed: ${(e as Error).message}`);
+      toastError("Download failed", e);
     }
     setTimeout(() => setDownloadState(null), 4000);
   }, [link, meta]);

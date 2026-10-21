@@ -20,27 +20,63 @@ export type ProviderView = {
 };
 
 export async function getProviders(): Promise<ProviderView[]> {
-  const res = await fetch(`${API_BASE}/api/providers`);
-  if (!res.ok) throw new Error(`providers ${res.status}`);
-  return res.json();
+  return json<ProviderView[]>(`${API_BASE}/api/providers`);
 }
 
 /** fetch + error contract shared by all API calls */
 export async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
-    headers: init?.body ? { "Content-Type": "application/json", ...(init?.headers ?? {}) } : init?.headers,
+    headers: {
+      ...authHeaders(),
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
+  if (res.status === 401 && !url.includes("token=")) {
+    window.dispatchEvent(new Event("csweb-auth"));
+    throw new Error("401: this server requires the LAN token");
+  }
   if (!res.ok) {
     let detail = "";
+    let code = "";
     try {
       const body = await res.json();
       detail = body.detail ? `: ${body.detail}` : "";
+      code = body.error ? ` ${body.error}` : "";
     } catch { /* ignore */ }
-    throw new Error(`${res.status}${detail}`);
+    throw new Error(`${res.status}${code}${detail}`);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+// ---------- optional LAN token (CS_WEB_LAN_TOKEN mode) -----------------------
+
+/** The stored shared token, if the user supplied one. */
+export function authToken(): string | null {
+  try {
+    return localStorage.getItem("csweb.token");
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthToken(token: string): void {
+  try {
+    localStorage.setItem("csweb.token", token);
+  } catch { /* private mode: token lives only until reload */ }
+}
+
+function authHeaders(): Record<string, string> {
+  const t = authToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+/** ?token= form for <video>/<track> sources that cannot send headers. */
+function authQuery(): string {
+  const t = authToken();
+  return t ? `&token=${encodeURIComponent(t)}` : "";
 }
 
 // ---------- content types (mirror server DTOs in ContentRoutes.kt) ----------
@@ -149,7 +185,7 @@ function proxyUrl(base: string, url: string, headers: Record<string, string>): s
   const h = hasHeaders
     ? `&h=${btoa(encoded).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`
     : "";
-  return `${base}?url=${encodeURIComponent(url)}${h}`;
+  return `${base}?url=${encodeURIComponent(url)}${h}${authQuery()}`;
 }
 
 /** Ordered playback candidates: HLS first (proxy + hls.js), then direct files. */

@@ -20,8 +20,17 @@ object RuntimeConfig {
     /** Port the Ktor server binds to (defaults per plan: localhost:8080). */
     val port: Int = System.getenv("PORT")?.toIntOrNull() ?: 8080
 
-    /** LAN mode binds 0.0.0.0 instead of 127.0.0.1 (token auth is a later phase). */
+    /** LAN mode binds 0.0.0.0 instead of 127.0.0.1. */
     val lanMode: Boolean = System.getenv("CS_WEB_LAN") == "1"
+
+    /**
+     * Optional shared secret for LAN exposure (CS_WEB_LAN_TOKEN). When set,
+     * every /api route except /api/health requires it as
+     * `Authorization: Bearer <token>` or a `token` query parameter (the
+     * query form exists for video/track sources that cannot send headers).
+     */
+    val lanToken: String? =
+        System.getenv("CS_WEB_LAN_TOKEN")?.trim()?.takeIf { it.isNotEmpty() }
 
     val host: String = if (lanMode) "0.0.0.0" else "127.0.0.1"
 

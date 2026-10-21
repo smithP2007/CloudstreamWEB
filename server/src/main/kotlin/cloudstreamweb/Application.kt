@@ -1,8 +1,11 @@
 package cloudstreamweb
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCallPipeline
+import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -18,6 +21,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 
 @Serializable
 data class HealthBody(val ok: Boolean, val version: String, val libraryAvailable: String)
@@ -31,12 +35,35 @@ object PathProvider {
         System.getenv("CS_WEB_STATIC_DIR")?.let { p ->
             if (Files.isDirectory(Path.of(p))) return Path.of(p)
         }
-        // 2) conventional locations relative to repo root / working dir
+        // 2) conventional locations relative to repo root / working directory
         val candidates = listOf(
             Path.of("web/dist"),
             Path.of("../web/dist"),
         )
         return candidates.firstOrNull { Files.isDirectory(it) }
+    }
+}
+
+/**
+ * LAN token guard as part of the app contract: /api routes (minus
+ * /api/health) answer 401 unless the request presents the shared secret.
+ * The SPA sends `Authorization: Bearer`; media sources use a token query
+ * parameter.
+ */
+private fun Application.installLanTokenGuard(lanToken: String) {
+    intercept(ApplicationCallPipeline.Plugins) {
+        val path = call.request.path()
+        if (!path.startsWith("/api/") || path == "/api/health") return@intercept
+        val bearer = call.request.headers[HttpHeaders.Authorization]
+            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+            ?.substring(7)?.trim()
+        val given = bearer ?: call.request.queryParameters["token"]
+        val ok = given != null &&
+            given.length == lanToken.length &&
+            MessageDigest.isEqual(given.toByteArray(), lanToken.toByteArray())
+        if (ok) return@intercept
+        call.respond(HttpStatusCode.Unauthorized, cloudstreamweb.routes.ErrorBody("UNAUTHORIZED", "missing or invalid token"))
+        finish()
     }
 }
 
@@ -47,12 +74,17 @@ object PathProvider {
  */
 /**
  * The app-level contract shared by the live server and tests: JSON content
- * negotiation plus the typed error mapping (ProviderException kinds →
- * 400/404/502, everything else 500 with an `[api-error]` stderr line).
+ * negotiation, the optional LAN token guard, and the typed error mapping
+ * (ProviderException kinds → 400/404/502, everything else 500 with an
+ * `[api-error]` stderr line).
  */
-fun Application.installApiContract() {
+fun Application.installApiContract(lanToken: String? = RuntimeConfig.lanToken) {
     install(ContentNegotiation) {
         json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
+    }
+
+    if (lanToken != null) {
+        installLanTokenGuard(lanToken)
     }
 
     // Typed error contract for the SPA + full stack traces in the server log
@@ -101,7 +133,7 @@ fun main() {
 
     val staticRoot = PathProvider.spaDirectory()
 
-    embeddedServer(
+    val server = embeddedServer(
         Netty,
         host = RuntimeConfig.host,
         port = RuntimeConfig.port,
@@ -133,5 +165,16 @@ fun main() {
                 }
             }
         }
-    }.start(wait = true)
+    }
+
+    // systemd/SIGTERM friendly shutdown: drain HTTP, then checkpoint SQLite
+    Runtime.getRuntime().addShutdownHook(Thread {
+        runCatching { server.stop(1000, 3000) }
+            .onFailure { System.err.println("[shutdown] http stop: ${it.message}") }
+        runCatching { cloudstreamweb.persistence.Db.close() }
+            .onFailure { System.err.println("[shutdown] db close: ${it.message}") }
+        System.err.println("[shutdown] complete")
+    })
+
+    server.start(wait = true)
 }

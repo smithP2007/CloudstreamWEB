@@ -1,6 +1,7 @@
 package cloudstreamweb
 
 import cloudstreamweb.persistence.Db
+import cloudstreamweb.plugins.FakeSharedPreferences
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -161,5 +162,33 @@ class DbLibraryTest {
         val dbFile = Path.of(prop).resolve("db.sqlite")
         assertTrue(Files.exists(dbFile), "library Db should point at the isolated test dir, was $dbFile")
         assertFalse(dbFile.toString().contains(".cloudstream-web"), "real user data dir must not be touched by tests")
+    }
+
+    // ---- plugin prefs (Phase 5: headless SharedPreferences persistence) ------
+
+    @Test
+    fun `plugin prefs write through to sqlite`() {
+        val base = "SomePlugin/settings"
+        val bKey = "$base/${freshKey("b")}"
+        val iKey = "$base/${freshKey("i")}"
+        val sKey = "$base/${freshKey("s")}"
+        val setKey = "$base/${freshKey("set")}"
+
+        FakeSharedPreferences.put(bKey, true)
+        FakeSharedPreferences.put(iKey, 42)
+        FakeSharedPreferences.put(sKey, "hello world")
+        FakeSharedPreferences.put(setKey, setOf("a", "b"))
+
+        val raw = Db.loadPrefs()
+        assertEquals("b:true", raw[bKey])
+        assertEquals("i:42", raw[iKey])
+        assertEquals("s:hello world", raw[sKey])
+        assertTrue(raw[setKey]!!.startsWith("set:"), raw[setKey])
+
+        // readers resolve the stored values, defaults stay untouched
+        assertTrue(FakeSharedPreferences.getBoolean(bKey, false))
+        assertEquals(42, FakeSharedPreferences.getInt(iKey, 0))
+        assertEquals("hello world", FakeSharedPreferences.getString(sKey, "def"))
+        assertEquals(setOf("a", "b"), FakeSharedPreferences.getStringSet(setKey, null))
     }
 }

@@ -116,3 +116,34 @@
       endpoints), VttConversionTest; `./gradlew test` BUILD SUCCESSFUL
 - Notes: installApiContract() extracted so tests exercise the same StatusPages contract;
   RuntimeConfig now prefers `csweb.dataDir` system property (env fallback untouched)
+
+## Gate 5 — PASSED (phase 5: hardening & packaging)
+- [x] LAN token (CS_WEB_LAN_TOKEN): installApiContract(lanToken) guard — /api answers
+      401 {"error":"UNAUTHORIZED"} without the token; /api/health + static SPA shell stay
+      open; Authorization: Bearer and ?token= both authenticate (constant-time compare);
+      verified live (curl 401/200/401) + LanTokenAuthTest (header/query/missing paths)
+- [x] SPA token UX: fetch layer attaches Bearer from localStorage + `?token=` on proxy
+      URLs; any 401 fires csweb-auth → App token prompt overlay ("Save & retry" reloads
+      with the token); browser-verified modulo: overlay appears → token → library queries OK
+- [x] Typed error surfacing: web/src/lib/toast.ts toasts (error/info) wired into library
+      remove/clear handlers, DownloadsPanel act() and Player createDownload — browser
+      verified through the REAL handler path (toast error "Could not remove from
+      Continue Watching: simulated 500 INTERNAL")
+- [x] Graceful shutdown: SIGTERM hook stops Netty (1s grace/3s timeout) then closes the
+      Db WALS connection; log shows "[shutdown] complete" (verified twice by restart)
+      + Db reopens transparently on demand (conn getter, no lazy freeze)
+- [x] Headless plugin prefs persist: FakeSharedPreferences write-through to new
+      `prefs(key,value type-tagged)` SQLite table + lazy restore at first accessor;
+      DbLibraryTest covers encode/decode roundtrip (String/Bool/Int/Set)
+- [x] Packaging: scripts/package.sh builds build/csweb.tar.gz (39MB: prebuilt server +
+      SPA + run-packaged.sh launcher + systemd user unit + API.md); package smoke-tested
+      standalone on PORT=8099 + fresh CS_WEB_DATA_DIR (health 200, 401 guard, token 200,
+      SPA shell 200, data dir auto-created, SIGTERM clean exit)
+- [x] scripts/cloudstream-web.service (systemd user unit: Restart=on-failure, SIGTERM,
+      EnvironmentFile for tokens) + README "LAN mode, token, and systemd" section
+- [x] Provider matrix re-run (scripts/provider_matrix.py "news"): 8 providers fully
+      playable through the /api/stream proxy (BollyFlix, CineStream, Dailymotion,
+      Internet Archive, MoviesDrive, Rogmovies, Twitch, YouTube); upstream-side deadness
+      unchanged (Invidious search 0 items, Moviesmod links=0, TopMovies/Vega home dead;
+      CineSimkl/CineTmdb stream extract 502 upstream)
+- [x] `./gradlew test` BUILD SUCCESSFUL (incl. new LanTokenAuthTest, prefs roundtrip)

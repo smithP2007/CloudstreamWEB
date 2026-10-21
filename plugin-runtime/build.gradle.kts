@@ -28,10 +28,6 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-dependencies {
-    // ... existing deps above (kept at module top level)
-}
-
 tasks.test {
     useJUnitPlatform()
 }

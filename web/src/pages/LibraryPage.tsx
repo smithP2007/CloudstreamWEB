@@ -14,6 +14,8 @@ import {
   resumeDownload,
 } from "../lib/api";
 
+import { toastError } from "../lib/toast";
+
 /** Library hub: Continue Watching, Bookmarks, watch History, Downloads. */
 export function LibraryPage() {
   const [tab, setTab] = useState<"continue" | "bookmarks" | "history" | "downloads">("continue");
@@ -69,8 +71,12 @@ function ContinueRow() {
   }
 
   const drop = async (provider: string, url: string, episodeData: string) => {
-    await removeHistory(provider, url, episodeData);
-    qc.invalidateQueries({ queryKey: ["continue"] });
+    try {
+      await removeHistory(provider, url, episodeData);
+      qc.invalidateQueries({ queryKey: ["continue"] });
+    } catch (e) {
+      toastError("Could not remove from Continue Watching", e);
+    }
   };
 
   return (
@@ -116,8 +122,12 @@ function BookmarksGrid() {
   }
 
   const drop = async (provider: string, url: string) => {
-    await removeBookmark(provider, url);
-    qc.invalidateQueries({ queryKey: ["bookmarks"] });
+    try {
+      await removeBookmark(provider, url);
+      qc.invalidateQueries({ queryKey: ["bookmarks"] });
+    } catch (e) {
+      toastError("Could not remove bookmark", e);
+    }
   };
 
   return (
@@ -155,14 +165,22 @@ function HistoryList() {
   const rows = historyQ.data ?? [];
 
   const drop = async (provider: string, url: string, episodeData: string) => {
-    await removeHistory(provider, url, episodeData);
-    qc.invalidateQueries({ queryKey: ["history"] });
-    qc.invalidateQueries({ queryKey: ["continue"] });
+    try {
+      await removeHistory(provider, url, episodeData);
+      qc.invalidateQueries({ queryKey: ["history"] });
+      qc.invalidateQueries({ queryKey: ["continue"] });
+    } catch (e) {
+      toastError("Could not remove history entry", e);
+    }
   };
   const dropAll = async () => {
-    await clearHistory();
-    qc.invalidateQueries({ queryKey: ["history"] });
-    qc.invalidateQueries({ queryKey: ["continue"] });
+    try {
+      await clearHistory();
+      qc.invalidateQueries({ queryKey: ["history"] });
+      qc.invalidateQueries({ queryKey: ["continue"] });
+    } catch (e) {
+      toastError("Could not clear history", e);
+    }
   };
 
   return (
@@ -220,7 +238,11 @@ function DownloadsPanel() {
   }
 
   const act = async (f: () => Promise<unknown>) => {
-    await f();
+    try {
+      await f();
+    } catch (e) {
+      toastError("Download action failed", e);
+    }
     refresh();
   };
 

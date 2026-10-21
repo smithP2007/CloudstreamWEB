@@ -8,8 +8,8 @@ stub added and the evidence (which plugin demanded it).
 |---|---|---|---|
 | `com.lagradost.cloudstream3.plugins.Plugin` | headless abstract Plugin : BasePlugin (library) with load(context)->load() delegation, resources/openSettings fields; registerVideoClickAction NOT ported (no plugin calls it on load path) | CineStream v487 (CSX) | this was `NoClassDefFoundError com/lagradost/cloudstream3/plugins/Plugin` on install |
 | `android.content.Context` (+`res.Resources`) | empty open class; class used as VALUE by DexStore key chain | CineStream (javap: descriptor-only refs on load path) | settings/webview paths call context.* and are dormant headless |
-| `android.content.SharedPreferences` | interface + `FakeSharedPreferences` (in-memory, read-then-default) | CineStream | dex inlines cs3 DataStore.getKey -> getString; all keys unset -> plugin defaults apply (providers stay enabled) |
-| `com.lagradost.cloudstream3.utils.DataStore` | object getSharedPrefs(context) -> FakeSharedPreferences | CineStream | one process-wide store; not persisted (reinstalls deterministic) |
+| `android.content.SharedPreferences` | interface + `FakeSharedPreferences` (SQLite-backed via prefs table since Phase 5, read-then-default) | CineStream | dex inlines cs3 DataStore.getKey -> getString; unset keys -> plugin defaults apply (providers stay enabled) |
+| `com.lagradost.cloudstream3.utils.DataStore` | object getSharedPrefs(context) -> FakeSharedPreferences | CineStream | one process-wide store; write-through persisted to the prefs table (Phase 5) |
 | `com.lagradost.cloudstream3.CloudStreamApp` | class + companion `context` getter + `setKey(path,value)` companion method | CineStream | javap: getstatic Companion; invokevirtual getContext then Companion.setKey |
 | `com.lagradost.cloudstream3.utils.UiText` | sealed class (DynamicString/StringResource) + asString(Context) | CineStream | library has no UiText; resource-backed strings fall back to [res=…] |
 | `com.lagradost.cloudstream3.utils.Event` | observer-set port | CineStream | reloadHomeEvent holds a headless instance |
@@ -46,6 +46,6 @@ far**. This table will grow if a community plugin that extends the Android
 |---|---|---|
 | ~~`com.lagradost.cloudstream3.plugins.Plugin` (android-Context variant)~~ **DONE (CineStream et al.)** | — | see table above |
 | ~~`android.content.Context` / Resources~~ **DONE** | — | see table above |
-| ~~`com.lagradost.cloudstream3.utils.DataStore`~~ **DONE (in-memory, no persistence)** | plugins reading *written* settings across restart | swap FakeSharedPreferences for SQLite-backed prefs |
+| ~~`com.lagradost.cloudstream3.utils.DataStore`~~ **DONE (SQLite-backed from Phase 5)** | plugins reading *written* settings across restart | fake SharedPreferences + `prefs` SQLite table (write-through, type-tagged values, lazy restore) |
 | `SyncRepo.library-IoAF18A` (suspend library flow) | a provider whose stream search derives from a sync-account's user library | JVM proxy of the user's watchlist (upstream signature carries a hyphen and cannot be declared from Kotlin/Java source) |
 | `android.webkit.*` / WebView UI surfaces used by plugin settings dialogs | plugins' "openSettings" flows (never execute headless) | none required for stream playback |
