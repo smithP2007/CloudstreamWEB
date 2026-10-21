@@ -17,8 +17,8 @@ scripts/run.sh            # builds web + starts backend on http://localhost:8080
 Status (see docs/PROGRESS.md for gates):
 
 - [x] Phase 0 — scaffold, health endpoint, SPA shell, upstream artifact on JVM (Gate 0 = this check)
-- [ ] Phase 1 — repo catalog & manifest machinery
-- [ ] Phase 2 — extension install & load (.cs3 on desktop JVM)
-- [ ] Phase 3 — providers live: home/search/detail/streams
-- [ ] Phase 4 — library parity (bookmarks/history/downloads)
+- [x] Phase 1 — repo catalog & manifest machinery
+- [x] Phase 2 — extension install & load (.cs3 on desktop JVM)
+- [x] Phase 3 — providers live: home/search/detail/streams
+- [x] Phase 4 — library parity (bookmarks/history/downloads)
 - [ ] Phase 5 — hardening & packaging

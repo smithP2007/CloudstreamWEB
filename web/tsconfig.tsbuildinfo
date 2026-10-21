@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/lib/api.ts","./src/pages/BrowseContent.tsx","./src/pages/DetailContent.tsx","./src/pages/Player.tsx","./src/pages/ReposPage.tsx","./src/pages/SearchContent.tsx"],"version":"5.7.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/lib/api.ts","./src/pages/BrowseContent.tsx","./src/pages/DetailContent.tsx","./src/pages/LibraryPage.tsx","./src/pages/Player.tsx","./src/pages/ReposPage.tsx","./src/pages/SearchContent.tsx"],"version":"5.7.3"}

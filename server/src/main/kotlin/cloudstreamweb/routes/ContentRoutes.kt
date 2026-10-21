@@ -7,6 +7,7 @@ import com.lagradost.cloudstream3.LiveStreamLoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MovieLoadResponse
 import com.lagradost.cloudstream3.SearchResponse
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvSeriesLoadResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import io.ktor.server.response.respond
@@ -76,7 +77,19 @@ data class StreamDto(
 )
 
 @Serializable
-data class StreamsDto(val provider: String, val data: String, val links: List<StreamDto>)
+data class StreamsDto(
+    val provider: String,
+    val data: String,
+    val links: List<StreamDto>,
+    val subtitles: List<SubtitleDto> = emptyList(),
+)
+
+@Serializable
+data class SubtitleDto(
+    val lang: String,
+    val url: String,
+    val headers: Map<String, String> = emptyMap(),
+)
 
 // provider errors surface to the SPA as typed errors
 class ProviderException(val kind: String, message: String, cause: Throwable? = null) : RuntimeException(message, cause)
@@ -241,25 +254,33 @@ object ContentRoutes {
             val links = safe("loadLinks from ${provider.name}", timeoutMs = 90_000) {
                 kotlinx.coroutines.coroutineScope {
                     val channel = Channel<ExtractorLink>(Channel.UNLIMITED)
+                    val subs = Channel<SubtitleFile>(Channel.UNLIMITED)
                     val worker = launch {
                         try {
-                            provider.loadLinks(data, false, {}) { link -> channel.trySend(link) }
+                            provider.loadLinks(
+                                data, false,
+                                { sub -> subs.trySend(sub) },
+                            ) { link -> channel.trySend(link) }
                         } finally {
                             channel.close()
+                            subs.close()
                         }
                     }
                     val collected = buildList<ExtractorLink> {
                         for (link in channel) add(link)
                     }
+                    val collectedSubs = buildList<SubtitleFile> {
+                        for (sub in subs) add(sub)
+                    }
                     worker.join()
-                    collected
+                    collected to collectedSubs
                 }
             }
             call.respond(
                 StreamsDto(
                     provider = provider.name,
                     data = data,
-                    links = links.map { link ->
+                    links = links.first.map { link ->
                         StreamDto(
                             name = link.name,
                             url = link.url,
@@ -267,6 +288,13 @@ object ContentRoutes {
                             quality = link.quality,
                             headers = link.headers,
                             linkType = link.type.name,
+                        )
+                    },
+                    subtitles = links.second.map { sub ->
+                        SubtitleDto(
+                            lang = sub.lang,
+                            url = sub.url,
+                            headers = sub.headers ?: emptyMap(),
                         )
                     },
                 )

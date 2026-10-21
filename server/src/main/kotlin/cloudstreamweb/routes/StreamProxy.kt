@@ -91,6 +91,39 @@ object StreamProxy {
                 resp.close()
             }
         }
+
+        get("/api/subtitle") {
+            // Subtitle tracks: browsers need WebVTT; many providers ship SRT (or
+            // already-VTT text). Convert on the way through so <track> just works.
+            val rawUrl = call.request.queryParameters["url"]
+                ?: throw ProviderException("REPO_INVALID", "missing url")
+            if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
+                throw ProviderException("REPO_INVALID", "only http(s) links can be streamed")
+            }
+            val headers = decodeHeaders(call.request.queryParameters["h"])
+
+            val upstream = okhttp3.Request.Builder().url(rawUrl).apply {
+                headers.forEach { (k, v) -> header(k, v) }
+                header("Accept-Encoding", "identity")
+            }.build()
+
+            val resp = client.newCall(upstream).execute()
+            resp.use {
+                if (!it.isSuccessful) {
+                    throw ProviderException(
+                        "PROVIDER_ERROR",
+                        "upstream ${it.code} for ${rawUrl.take(120)}",
+                    )
+                }
+                // subtitles are small text payloads; read whole body for conversion
+                val bytes = it.body?.bytes() ?: ByteArray(0)
+                val raw = String(bytes, StandardCharsets.UTF_8)
+                call.respondText(
+                    toVtt(raw),
+                    ContentType.parse("text/vtt; charset=UTF-8"),
+                )
+            }
+        }
     }
 
     /** The exact header set we replay upstream (base64url-JSON "h" param). */
@@ -146,5 +179,26 @@ object StreamProxy {
         val enc = URLEncoder.encode(url, StandardCharsets.UTF_8)
         return if (headersB64.isBlank()) "/api/stream?url=$enc"
         else "/api/stream?url=$enc&h=$headersB64"
+    }
+
+    /** URL of a proxied subtitle track (same header replay, converted to VTT). */
+    fun subtitleProxied(url: String, headers: Map<String, String>): String {
+        val h = headersEncoded(headers)
+        val enc = URLEncoder.encode(url, StandardCharsets.UTF_8)
+        return if (h.isBlank()) "/api/subtitle?url=$enc" else "/api/subtitle?url=$enc&h=$h"
+    }
+
+    // ---- subtitle conversion --------------------------------------------------
+
+    /** WEBVTT header + comma→dot timestamps; VTT input passes through untouched. */
+    private val srtStampRegex = Regex("""(\d{2}):(\d{2}):(\d{2}),(\d{3})""")
+
+    fun toVtt(raw: String): String {
+        val text = raw.replace("\uFEFF", "")
+        if (text.trimStart().startsWith("WEBVTT")) return text
+        val converted = srtStampRegex.replace(text) { m ->
+            "${m.groupValues[1]}:${m.groupValues[2]}:${m.groupValues[3]}.${m.groupValues[4]}"
+        }
+        return "WEBVTT\n\n" + converted.trimStart('\n', '\r')
     }
 }

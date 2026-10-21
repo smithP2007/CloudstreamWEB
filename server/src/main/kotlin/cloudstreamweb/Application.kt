@@ -2,6 +2,7 @@ package cloudstreamweb
 
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.Application
 import io.ktor.server.application.install
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -44,6 +45,40 @@ object PathProvider {
  * serves the SPA from web/dist when it exists. API routes come FIRST so
  * static fallback never shadows them.
  */
+/**
+ * The app-level contract shared by the live server and tests: JSON content
+ * negotiation plus the typed error mapping (ProviderException kinds →
+ * 400/404/502, everything else 500 with an `[api-error]` stderr line).
+ */
+fun Application.installApiContract() {
+    install(ContentNegotiation) {
+        json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
+    }
+
+    // Typed error contract for the SPA + full stack traces in the server log
+    install(StatusPages) {
+        exception<cloudstreamweb.routes.ProviderException> { call, cause ->
+            val status = when (cause.kind) {
+                "REPO_INVALID" -> HttpStatusCode.BadRequest
+                "PROVIDER_NOT_FOUND", "ENTRY_NOT_FOUND" -> HttpStatusCode.NotFound
+                else -> HttpStatusCode.BadGateway
+            }
+            call.respond(status, cloudstreamweb.routes.ErrorBody(cause.kind, cause.message))
+        }
+        exception<Throwable> { call, cause ->
+            System.err.println("[api-error] ${call.request.path()}")
+            cause.printStackTrace()
+            call.respond(
+                HttpStatusCode.InternalServerError,
+                cloudstreamweb.routes.ErrorBody(
+                    "INTERNAL",
+                    (cause.message ?: cause.javaClass.simpleName).take(300),
+                )
+            )
+        }
+    }
+}
+
 fun main() {
     val dataDir = RuntimeConfig.ensureDataDir()
     System.err.println("cloud-stream-web $APP_VERSION starting; data dir: $dataDir; binding ${RuntimeConfig.host}:${RuntimeConfig.port}")
@@ -55,6 +90,15 @@ fun main() {
     // Reload previously-installed plugins in the background
     cloudstreamweb.plugins.ExtensionRuntime.restoreAll()
 
+    // Crash/restart sanctuary: anything the download queue claims to be
+    // running can't be running after a process death — mark it resumable.
+    cloudstreamweb.persistence.Db.listStaleRunning().forEach { row ->
+        System.err.println("[download-restore] ${row.id} ${row.name}: RUNNING after restart -> PAUSED (${row.downloadedBytes}B)")
+        cloudstreamweb.persistence.Db.setDownloadProgress(
+            row.id, row.downloadedBytes, "PAUSED", "interrupted by server restart",
+        )
+    }
+
     val staticRoot = PathProvider.spaDirectory()
 
     embeddedServer(
@@ -63,32 +107,7 @@ fun main() {
         port = RuntimeConfig.port,
         watchPaths = emptyList(),
     ) {
-        install(ContentNegotiation) {
-            json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
-        }
-
-        // Typed error contract for the SPA + full stack traces in the server log
-        install(StatusPages) {
-            exception<cloudstreamweb.routes.ProviderException> { call, cause ->
-                val status = when (cause.kind) {
-                    "REPO_INVALID" -> HttpStatusCode.BadRequest
-                    "PROVIDER_NOT_FOUND", "ENTRY_NOT_FOUND" -> HttpStatusCode.NotFound
-                    else -> HttpStatusCode.BadGateway
-                }
-                call.respond(status, cloudstreamweb.routes.ErrorBody(cause.kind, cause.message))
-            }
-            exception<Throwable> { call, cause ->
-                System.err.println("[api-error] ${call.request.path()}")
-                cause.printStackTrace()
-                call.respond(
-                    HttpStatusCode.InternalServerError,
-                    cloudstreamweb.routes.ErrorBody(
-                        "INTERNAL",
-                        (cause.message ?: cause.javaClass.simpleName).take(300),
-                    )
-                )
-            }
-        }
+        installApiContract()
 
         routing {
             get("/api/health") {
@@ -99,6 +118,8 @@ fun main() {
             cloudstreamweb.routes.PluginRoutes.install(this)
             cloudstreamweb.routes.ContentRoutes.install(this)
             cloudstreamweb.routes.StreamProxy.install(this)
+            cloudstreamweb.routes.LibraryRoutes.install(this)
+            cloudstreamweb.routes.DownloadsRoutes.install(this)
 
             if (staticRoot != null) {
                 Spas.addSpaRouting(this, staticRoot)

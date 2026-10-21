@@ -263,3 +263,191 @@ table.plugins tr:hover td { background: #101724; }
 section h2 {
   margin-top: 26px;
 }
+
+/* ---------- library (phase 4) ---------- */
+
+.library-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.library-tabs button,
+.library-tools button,
+.download-actions button {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.library-tabs button.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.library-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.library-card-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.library-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  background: #0a0d13;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.library-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.poster-fallback {
+  color: var(--muted);
+  font-size: 26px;
+}
+
+.progress-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.progress-track.wide {
+  position: static;
+  height: 5px;
+  margin: 6px 0;
+  border-radius: 3px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+.progress-fill.bad {
+  background: var(--bad);
+}
+
+.library-card-body {
+  padding: 8px 10px 6px;
+}
+
+.library-card-title {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-danger {
+  background: none;
+  border: none;
+  color: var(--bad);
+  cursor: pointer;
+  padding: 4px 10px;
+}
+
+.library-tools {
+  margin-bottom: 10px;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.history-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-list a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: inherit;
+  text-decoration: none;
+  padding: 7px 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.history-list img {
+  width: 36px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.downloads-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.download-row {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+
+.download-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.download-actions {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 2px;
+}
+
+.bookmark-toggle {
+  margin: 8px 0 4px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.bookmark-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

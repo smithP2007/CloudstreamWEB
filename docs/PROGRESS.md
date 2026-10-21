@@ -77,3 +77,42 @@
       automatic candidate advance on media errors; verified in browser: BollyFlix movie
       (R2 mp4 via proxy, currentTime advancing 30s+, 9655s duration) and Twitch live
       (hls.js blob stream through rewritten m3u8 playlist, currentTime advancing 21s+)
+
+## Gate 4 — PASSED (phase 4: library parity — bookmarks / history / downloads)
+- [x] Library schema in SQLite: `bookmarks`, `history(provider,url,episode_data,position,
+      duration,finished)`, `downloads(state DOWNLOADED queue table)` — WAL, single-connection
+      Db (plugin-runtime/.../persistence/Db.kt, ~all library helpers)
+- [x] LibraryRoutes: bookmarks CRUD + isBookmarked flag; history upsert/list/entry/delete
+      (+ delete-all); `/api/library/continue` = active history (finished=0 AND position>5);
+      POST /api/library/history auto-finishes when position >= duration-45 (player messaging
+      compatible with upstream semantics)
+- [x] DownloadManager: disk queue under <dataDir>/Downloads — per-~2% progress persisted,
+      HTTP Range resume, per-row cancel → PAUSED (partial file kept), delete unlinks row+file;
+      concurrency semaphore(2); recorded `file_path` at first RUNNING → resume determinism
+      (append only when target file exists AND a range was honoured, else clean restart);
+      filename decided once: link-URL ext → name ext → SPA `extHint` → content-type → bin
+- [x] Boot restore hook in Application.kt: RUNNING/QUEUED rows after restart → PAUSED
+      ("interrupted by server restart") — verified live after an actual restart mid-download
+- [x] Subtitles surfaced: /api/streams collects SubtitleFile via subtitleCallback →
+      `subtitles[{lang,url,headers}]`; /api/subtitle proxy fetches w/ provider headers and
+      converts SRT→WebVTT (WEBVTT header + comma→dot ms, BOM strip; VTT passthrough)
+- [x] SPA: api.ts library/download/proxy helpers; Player meta + throttled (~10s) progress
+      reporting + pause/end/unmount saves + saved-position seek (controller handles
+      cache-hit/late-resume races; only when fresh start & pos<duration-30) + subtitle
+      <track> mounting + "⬇ download" button on the playing link; DetailContent bookmark
+      toggle, `?data=` deep link (Continue-Watching invocations), PlayerMeta resolution;
+      LibraryPage: Continue Watching grid (poster, % bar, resume link, remove), Bookmarks
+      grid, History list w/ clear-all, Downloads panel (1.8s poll, pause/resume/discard)
+- [x] Verified live in browser (BollyFlix "The Silent Planet", 1080p r2 .mkv through proxy):
+      watch 26s → history row recorded at exact position; navigate-away flush; continue
+      card → deep link → seek to saved pos (20.65s) confirmed via currentTime=24.16s after
+      3.5s of autoplay; bookmark ☆→★ roundtrip reflected in /api/library/bookmarks; player
+      ⬇ → RUNNING → UI pause → PAUSED@100MB → resume → DONE@2.33GB in Downloads panel
+- [x] Byte-accuracy: 30MB test file MD5 identical after cancel@16MB + Range resume
+      (29dcadf0839ad70e6a687d700ad112f5 both files); SRT→VTT conversion verified over HTTP
+- [x] Tests: server DbLibraryTest (bookmark/history/download lifecycle + isolated
+      test-data dir via csweb.dataDir), LibraryRoutesHttpTest (typed 400/404/502 contract
+      via installApiContract() shared with main(), auto-finish margin, download queue
+      endpoints), VttConversionTest; `./gradlew test` BUILD SUCCESSFUL
+- Notes: installApiContract() extracted so tests exercise the same StatusPages contract;
+  RuntimeConfig now prefers `csweb.dataDir` system property (env fallback untouched)

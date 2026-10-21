@@ -7,8 +7,14 @@ import java.nio.file.Path
  * Runtime configuration for the whole backend (server + plugin-runtime).
  */
 object RuntimeConfig {
+    /**
+     * Precedence: csweb.dataDir system property (tests/in-process boots) →
+     * CS_WEB_DATA_DIR env → ~/.cloudstream-web.
+     */
     val dataDir: Path = Path.of(
-        System.getenv("CS_WEB_DATA_DIR") ?: "${System.getProperty("user.home")}/.cloudstream-web"
+        System.getProperty("csweb.dataDir")
+            ?: System.getenv("CS_WEB_DATA_DIR")
+            ?: "${System.getProperty("user.home")}/.cloudstream-web",
     )
 
     /** Port the Ktor server binds to (defaults per plan: localhost:8080). */

@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import { BrowseContent } from "./pages/BrowseContent";
 import { SearchContent } from "./pages/SearchContent";
 import { DetailContent } from "./pages/DetailContent";
+import { LibraryPage } from "./pages/LibraryPage";
 import { useQuery } from "@tanstack/react-query";
 import ReposPage from "./pages/ReposPage";
 import { getHealth } from "./lib/api";
@@ -54,7 +55,7 @@ export default function App() {
           <Route path="/search" element={<SearchContent />} />
           <Route path="/detail" element={<DetailContent />} />
           <Route path="/repos" element={<ReposPage />} />
-          <Route path="/library" element={<Placeholder title="Library" />} />
+          <Route path="/library" element={<LibraryPage />} />
           <Route path="/settings" element={<Placeholder title="Settings" />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

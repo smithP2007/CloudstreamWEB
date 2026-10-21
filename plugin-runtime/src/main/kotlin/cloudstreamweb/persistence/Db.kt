@@ -199,4 +199,444 @@ object Db {
             ps.executeUpdate()
         }
     }
+
+    // ---- library (phase 4) --------------------------------------------------
+
+    /** Ensure phase-4 tables exist (idempotent; safe before any library call). */
+    private fun ensureLibrarySchema() {
+        conn.createStatement().use { st ->
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS bookmarks(
+                    provider TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    poster TEXT,
+                    type TEXT,
+                    source_plugin TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(provider, url)
+                )
+            """)
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS history(
+                    provider TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    episode_data TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    episode_label TEXT,
+                    poster TEXT,
+                    position REAL NOT NULL DEFAULT 0,
+                    duration REAL,
+                    finished INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(provider, url, episode_data)
+                )
+            """)
+            st.execute("""
+                CREATE TABLE IF NOT EXISTS downloads(
+                    id TEXT PRIMARY KEY,
+                    provider TEXT,
+                    url TEXT,
+                    name TEXT NOT NULL,
+                    link_url TEXT NOT NULL,
+                    headers TEXT,
+                    file_path TEXT,
+                    total_bytes INTEGER,
+                    downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+                    state TEXT NOT NULL DEFAULT 'QUEUED',
+                    detail TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        }
+    }
+
+    // ---- bookmarks -----------------------------------------------------------
+
+    data class BookmarkRow(
+        val provider: String,
+        val url: String,
+        val name: String,
+        val poster: String?,
+        val type: String?,
+        val sourcePlugin: String?,
+        val createdAt: String,
+    )
+
+    fun upsertBookmark(
+        provider: String,
+        url: String,
+        name: String,
+        poster: String?,
+        type: String?,
+        sourcePlugin: String?,
+    ) {
+        ensureLibrarySchema()
+        conn.prepareStatement(
+            """
+            INSERT INTO bookmarks(provider, url, name, poster, type, source_plugin)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, url) DO UPDATE SET
+                name=excluded.name, poster=excluded.poster,
+                type=excluded.type, source_plugin=excluded.source_plugin
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, provider)
+            ps.setString(2, url)
+            ps.setString(3, name)
+            ps.setString(4, poster)
+            ps.setString(5, type)
+            ps.setString(6, sourcePlugin)
+            ps.executeUpdate()
+        }
+    }
+
+    fun listBookmarks(): List<BookmarkRow> {
+        ensureLibrarySchema()
+        conn.createStatement().use { st ->
+            val rs = st.executeQuery(
+                "SELECT provider, url, name, poster, type, source_plugin, created_at FROM bookmarks ORDER BY created_at DESC"
+            )
+            val out = mutableListOf<BookmarkRow>()
+            while (rs.next()) {
+                out += BookmarkRow(
+                    provider = rs.getString(1),
+                    url = rs.getString(2),
+                    name = rs.getString(3),
+                    poster = rs.getString(4),
+                    type = rs.getString(5),
+                    sourcePlugin = rs.getString(6),
+                    createdAt = rs.getString(7),
+                )
+            }
+            return out
+        }
+    }
+
+    fun isBookmarked(provider: String, url: String): Boolean {
+        ensureLibrarySchema()
+        conn.prepareStatement("SELECT 1 FROM bookmarks WHERE provider = ? AND url = ?").use { ps ->
+            ps.setString(1, provider)
+            ps.setString(2, url)
+            ps.executeQuery().use { rs -> return rs.next() }
+        }
+    }
+
+    fun deleteBookmark(provider: String, url: String) {
+        ensureLibrarySchema()
+        conn.prepareStatement("DELETE FROM bookmarks WHERE provider = ? AND url = ?").use { ps ->
+            ps.setString(1, provider)
+            ps.setString(2, url)
+            ps.executeUpdate()
+        }
+    }
+
+    // ---- history / continue watching ----------------------------------------
+
+    data class HistoryRow(
+        val provider: String,
+        val url: String,
+        val episodeData: String,
+        val name: String,
+        val episodeLabel: String?,
+        val poster: String?,
+        val position: Double,
+        val duration: Double?,
+        val finished: Boolean,
+        val updatedAt: String,
+    )
+
+    fun upsertHistory(
+        provider: String,
+        url: String,
+        episodeData: String,
+        name: String,
+        episodeLabel: String?,
+        poster: String?,
+        position: Double,
+        duration: Double?,
+        finished: Boolean,
+    ) {
+        ensureLibrarySchema()
+        conn.prepareStatement(
+            """
+            INSERT INTO history(provider, url, episode_data, name, episode_label, poster, position, duration, finished)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, url, episode_data) DO UPDATE SET
+                name=excluded.name, episode_label=excluded.episode_label,
+                poster=excluded.poster, position=excluded.position,
+                duration=excluded.duration, finished=excluded.finished,
+                updated_at=CURRENT_TIMESTAMP
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, provider)
+            ps.setString(2, url)
+            ps.setString(3, episodeData)
+            ps.setString(4, name)
+            ps.setString(5, episodeLabel)
+            ps.setString(6, poster)
+            ps.setDouble(7, position)
+            if (duration != null) ps.setDouble(8, duration) else ps.setNull(8, java.sql.Types.DOUBLE)
+            ps.setInt(9, if (finished) 1 else 0)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Newest-first history; optionally without finished entries. */
+    fun listHistory(activeOnly: Boolean, limit: Int): List<HistoryRow> {
+        ensureLibrarySchema()
+        val sql = buildString {
+            append("SELECT provider, url, episode_data, name, episode_label, poster, position, duration, finished, updated_at FROM history")
+            if (activeOnly) append(" WHERE finished = 0 AND position > 5")
+            append(" ORDER BY updated_at DESC LIMIT ?")
+        }
+        conn.prepareStatement(sql).use { ps ->
+            ps.setInt(1, limit)
+            ps.executeQuery().use { rs ->
+                val out = mutableListOf<HistoryRow>()
+                while (rs.next()) {
+                    out += HistoryRow(
+                        provider = rs.getString(1),
+                        url = rs.getString(2),
+                        episodeData = rs.getString(3),
+                        name = rs.getString(4),
+                        episodeLabel = rs.getString(5),
+                        poster = rs.getString(6),
+                        position = rs.getDouble(7),
+                        duration = rs.getDouble(8),
+                        finished = rs.getInt(9) == 1,
+                        updatedAt = rs.getString(10),
+                    )
+                }
+                return out
+            }
+        }
+    }
+
+    fun getHistoryEntry(provider: String, url: String, episodeData: String): HistoryRow? {
+        ensureLibrarySchema()
+        conn.prepareStatement(
+            "SELECT provider, url, episode_data, name, episode_label, poster, position, duration, finished, updated_at FROM history WHERE provider = ? AND url = ? AND episode_data = ?"
+        ).use { ps ->
+            ps.setString(1, provider)
+            ps.setString(2, url)
+            ps.setString(3, episodeData)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return null
+                return HistoryRow(
+                    provider = rs.getString(1),
+                    url = rs.getString(2),
+                    episodeData = rs.getString(3),
+                    name = rs.getString(4),
+                    episodeLabel = rs.getString(5),
+                    poster = rs.getString(6),
+                    position = rs.getDouble(7),
+                    duration = rs.getDouble(8),
+                    finished = rs.getInt(9) == 1,
+                    updatedAt = rs.getString(10),
+                )
+            }
+        }
+    }
+
+    fun deleteHistory(provider: String, url: String, episodeData: String? = null) {
+        ensureLibrarySchema()
+        val sql = if (episodeData == null) {
+            "DELETE FROM history WHERE provider = ? AND url = ?"
+        } else {
+            "DELETE FROM history WHERE provider = ? AND url = ? AND episode_data = ?"
+        }
+        conn.prepareStatement(sql).use { ps ->
+            ps.setString(1, provider)
+            ps.setString(2, url)
+            if (episodeData != null) ps.setString(3, episodeData)
+            ps.executeUpdate()
+        }
+    }
+
+    fun deleteAllHistory() {
+        ensureLibrarySchema()
+        conn.createStatement().use { it.execute("DELETE FROM history") }
+    }
+
+    // ---- downloads -----------------------------------------------------------
+
+    data class DownloadRow(
+        val id: String,
+        val provider: String?,
+        val url: String?,
+        val name: String,
+        val linkUrl: String,
+        val filePath: String?,
+        val totalBytes: Long?,
+        val downloadedBytes: Long,
+        val state: String,
+        val detail: String?,
+        val createdAt: String,
+    )
+
+    fun createDownload(
+        id: String,
+        provider: String?,
+        url: String?,
+        name: String,
+        linkUrl: String,
+        headersJson: String?,
+    ): DownloadRow {
+        ensureLibrarySchema()
+        conn.prepareStatement(
+            "INSERT INTO downloads(id, provider, url, name, link_url, headers, state) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED')"
+        ).use { ps ->
+            ps.setString(1, id)
+            ps.setString(2, provider)
+            ps.setString(3, url)
+            ps.setString(4, name)
+            ps.setString(5, linkUrl)
+            ps.setString(6, headersJson)
+            ps.executeUpdate()
+        }
+        return getDownload(id)!!
+    }
+
+    fun setDownloadProgress(
+        id: String,
+        downloadedBytes: Long,
+        state: String?,
+        detail: String?,
+        filePath: String? = null,
+    ) {
+        conn.prepareStatement(
+            "UPDATE downloads SET downloaded_bytes = ?, state = COALESCE(?, state), detail = COALESCE(?, detail), file_path = COALESCE(?, file_path), updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        ).use { ps ->
+            ps.setLong(1, downloadedBytes)
+            if (state != null) ps.setString(2, state) else ps.setNull(2, java.sql.Types.VARCHAR)
+            if (detail != null) ps.setString(3, detail) else ps.setNull(3, java.sql.Types.VARCHAR)
+            if (filePath != null) ps.setString(4, filePath) else ps.setNull(4, java.sql.Types.VARCHAR)
+            ps.setString(5, id)
+            ps.executeUpdate()
+        }
+    }
+
+    fun setDownloadDone(id: String, filePath: String, totalBytes: Long) {
+        conn.prepareStatement(
+            "UPDATE downloads SET state='DONE', file_path=?, total_bytes=?, downloaded_bytes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
+        ).use { ps ->
+            ps.setString(1, filePath)
+            ps.setLong(2, totalBytes)
+            ps.setLong(3, totalBytes)
+            ps.setString(4, id)
+            ps.executeUpdate()
+        }
+    }
+
+    fun setDownloadFailed(id: String, filePath: String?, downloadedBytes: Long, detail: String?) {
+        conn.prepareStatement(
+            "UPDATE downloads SET state='FAILED', file_path=COALESCE(?, file_path), downloaded_bytes=?, detail=COALESCE(?, detail), updated_at=CURRENT_TIMESTAMP WHERE id=?"
+        ).use { ps ->
+            if (filePath != null) ps.setString(1, filePath) else ps.setNull(1, java.sql.Types.VARCHAR)
+            ps.setLong(2, downloadedBytes)
+            if (detail != null) ps.setString(3, detail) else ps.setNull(3, java.sql.Types.VARCHAR)
+            ps.setString(4, id)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Raw headers JSON of a download row (for resume; parsed by the manager). */
+    fun getDownloadHeaders(id: String): String? {
+        ensureLibrarySchema()
+        conn.prepareStatement("SELECT headers FROM downloads WHERE id = ?").use { ps ->
+            ps.setString(1, id)
+            ps.executeQuery().use { rs -> return if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
+    fun getDownload(id: String): DownloadRow? {
+        ensureLibrarySchema()
+        conn.prepareStatement(
+            "SELECT id, provider, url, name, link_url, file_path, total_bytes, downloaded_bytes, state, detail, created_at FROM downloads WHERE id = ?"
+        ).use { ps ->
+            ps.setString(1, id)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return null
+                return DownloadRow(
+                    id = rs.getString(1),
+                    provider = rs.getString(2),
+                    url = rs.getString(3),
+                    name = rs.getString(4),
+                    linkUrl = rs.getString(5),
+                    filePath = rs.getString(6),
+                    totalBytes = rs.getLong(7).let { if (rs.wasNull()) null else it },
+                    downloadedBytes = rs.getLong(8),
+                    state = rs.getString(9),
+                    detail = rs.getString(10),
+                    createdAt = rs.getString(11),
+                )
+            }
+        }
+    }
+
+    fun listDownloads(limit: Int = 100): List<DownloadRow> {
+        ensureLibrarySchema()
+        conn.prepareStatement(
+            "SELECT id, provider, url, name, link_url, file_path, total_bytes, downloaded_bytes, state, detail, created_at FROM downloads ORDER BY created_at DESC LIMIT ?"
+        ).use { ps ->
+            ps.setInt(1, limit)
+            ps.executeQuery().use { rs ->
+                val out = mutableListOf<DownloadRow>()
+                while (rs.next()) {
+                    out += DownloadRow(
+                        id = rs.getString(1),
+                        provider = rs.getString(2),
+                        url = rs.getString(3),
+                        name = rs.getString(4),
+                        linkUrl = rs.getString(5),
+                        filePath = rs.getString(6),
+                        totalBytes = rs.getLong(7).let { if (rs.wasNull()) null else it },
+                        downloadedBytes = rs.getLong(8),
+                        state = rs.getString(9),
+                        detail = rs.getString(10),
+                        createdAt = rs.getString(11),
+                    )
+                }
+                return out
+            }
+        }
+    }
+
+    fun deleteDownloadRow(id: String) {
+        ensureLibrarySchema()
+        conn.prepareStatement("DELETE FROM downloads WHERE id = ?").use { ps ->
+            ps.setString(1, id)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Downloads still RUNNING after a process restart: server died mid-flight. */
+    fun listStaleRunning(): List<DownloadRow> {
+        ensureLibrarySchema()
+        conn.createStatement().use { st ->
+            st.executeQuery(
+                "SELECT id, provider, url, name, link_url, file_path, total_bytes, downloaded_bytes, state, detail, created_at FROM downloads WHERE state IN ('RUNNING','QUEUED')"
+            ).use { rs ->
+                val out = mutableListOf<DownloadRow>()
+                while (rs.next()) {
+                    out += DownloadRow(
+                        id = rs.getString(1),
+                        provider = rs.getString(2),
+                        url = rs.getString(3),
+                        name = rs.getString(4),
+                        linkUrl = rs.getString(5),
+                        filePath = rs.getString(6),
+                        totalBytes = rs.getLong(7).let { if (rs.wasNull()) null else it },
+                        downloadedBytes = rs.getLong(8),
+                        state = rs.getString(9),
+                        detail = rs.getString(10),
+                        createdAt = rs.getString(11),
+                    )
+                }
+                return out
+            }
+        }
+    }
 }
