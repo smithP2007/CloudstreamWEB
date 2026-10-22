@@ -38,12 +38,36 @@ export function Player({
   const [muted, setMuted] = useState(false);
   const [downloadState, setDownloadState] = useState<string | null>(null);
 
+  /** playhead of the active <video>, mirrored by useProgressBinding (ref writes only) */
+  const livePosRef = useRef<number | null>(null);
+  /**
+   * When the user (or a failure) switches source mid-play, continue at the
+   * current playhead instead of the episode's saved position. null → fall
+   * back to the original resumePosition from history.
+   */
+  const [switchResume, setSwitchResume] = useState<number | null>(null);
+  const effectiveResume = switchResume ?? resumePosition;
+
   useEffect(() => setIndex(0), [links]);
+  useEffect(() => setSwitchResume(null), [links]);
 
   const indexRef = useRef(0);
   useEffect(() => { indexRef.current = index; }, [index]);
+
+  /** capture where we are, then jump to candidate i */
+  const pickSource = useCallback((i: number) => {
+    if (i < 0 || i >= candidates.length) return;
+    const pos = livePosRef.current;
+    setSwitchResume(pos != null && pos > 1 ? Math.floor(pos) : null);
+    setIndex(i);
+  }, [candidates.length]);
+
   /** stable advance: components keep it in their load effect deps */
-  const advance = useCallback(() => setIndex(indexRef.current + 1), []);
+  const advance = useCallback(() => {
+    const pos = livePosRef.current;
+    setSwitchResume(pos != null && pos > 1 ? Math.floor(pos) : null);
+    setIndex(indexRef.current + 1);
+  }, []);
 
   const link = candidates[index];
 
@@ -107,24 +131,30 @@ export function Player({
   return link.linkType === "M3U8" ? (
     <HlsPlayer
       link={link}
+      candidates={candidates}
+      onSourcePick={pickSource}
+      livePosRef={livePosRef}
       muted={muted}
       setMuted={setMuted}
       reportProgress={reportProgress}
-      resumePosition={resumePosition}
+      resumePosition={effectiveResume}
       subtitles={subtitles}
       onFail={advance}
-      index={0}
-      total={1}
+      index={index}
+      total={candidates.length}
       onDownload={downloadCurrentLink}
       downloadState={downloadState}
     />
   ) : (
     <NativePlayer
       link={link}
+      candidates={candidates}
+      onSourcePick={pickSource}
+      livePosRef={livePosRef}
       muted={muted}
       setMuted={setMuted}
       reportProgress={reportProgress}
-      resumePosition={resumePosition}
+      resumePosition={effectiveResume}
       subtitles={subtitles}
       onFail={advance}
       index={index}
@@ -137,6 +167,12 @@ export function Player({
 
 type SharedPlayerProps = {
   link: StreamDto;
+  /** the full ordered candidate list — the source picker lists them all */
+  candidates: StreamDto[];
+  /** switch to candidate i (from the picker or ◀/▶) */
+  onSourcePick: (i: number) => void;
+  /** parent ref mirroring the active playhead, for position-continuity on switch */
+  livePosRef: { current: number | null };
   muted: boolean;
   setMuted: (m: boolean) => void;
   reportProgress: (pos: number, dur: number, finished: boolean) => void;
@@ -236,10 +272,11 @@ function SubtitlePicker({
   );
 }
 
-function Controls({ link, index, total, muted, toggleMute, onDownload, downloadState, videoRef, subtitles }: {
+function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles }: {
   link: StreamDto;
+  candidates: StreamDto[];
   index: number;
-  total: number;
+  onSourcePick: (i: number) => void;
   muted: boolean;
   toggleMute: () => void;
   onDownload: () => void;
@@ -247,10 +284,49 @@ function Controls({ link, index, total, muted, toggleMute, onDownload, downloadS
   videoRef: React.RefObject<HTMLVideoElement | null>;
   subtitles?: SubtitleDto[];
 }) {
+  const total = candidates.length;
   return (
     <div className="player-controls small mono muted">
-      <span>
-        {index + 1}/{total} · {link.source} · {link.quality > 0 ? `${link.quality}p` : link.linkType}
+      <span className="source-switch">
+        {total > 1 && (
+          <>
+            <button
+              onClick={() => onSourcePick(index - 1)}
+              disabled={index <= 0}
+              title="Previous source"
+              aria-label="Previous source"
+            >
+              ◀
+            </button>{" "}
+          </>
+        )}
+        <select
+          className="src-pick"
+          value={String(index)}
+          onChange={(e) => onSourcePick(Number(e.target.value))}
+          title="Switch source"
+          aria-label="Video source"
+          disabled={total < 2}
+        >
+          {candidates.map((c, i) => (
+            <option key={`${i}-${c.url}`} value={String(i)}>
+              {i + 1}/{total} · {c.source} · {c.quality > 0 ? `${c.quality}p` : c.linkType}
+            </option>
+          ))}
+        </select>
+        {total > 1 && (
+          <>
+            {" "}
+            <button
+              onClick={() => onSourcePick(index + 1)}
+              disabled={index >= total - 1}
+              title="Next source"
+              aria-label="Next source"
+            >
+              ▶
+            </button>
+          </>
+        )}
       </span>
       <span>
         <SubtitlePicker videoRef={videoRef} subtitles={subtitles} />{" "}
@@ -325,6 +401,10 @@ function bindProgressEvents(
       state.resumePos = pos;
       trySeek();
     },
+    /** last known playhead — used to continue at the same spot when sources switch */
+    getPosition() {
+      return state.position;
+    },
     unbind(finalReport = false) {
       video.removeEventListener("loadedmetadata", trySeek);
       video.removeEventListener("timeupdate", onTime);
@@ -342,6 +422,7 @@ type ProgressController = ReturnType<typeof bindProgressEvents>;
 function useProgressBinding(
   link: StreamDto,
   reportProgress: (pos: number, dur: number, finished: boolean) => void,
+  livePosRef?: { current: number | null },
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const progressRef = useRef<ProgressController | null>(null);
@@ -362,6 +443,18 @@ function useProgressBinding(
       if (progressRef.current === controller) progressRef.current = null;
     };
   }, [bind, link]);
+
+  // Mirror the playhead into the parent's ref (~2x/s, ref writes only —
+  // never re-renders). The parent reads it when switching sources so the
+  // next candidate continues at the same timestamp.
+  useEffect(() => {
+    if (!livePosRef) return;
+    const id = window.setInterval(() => {
+      const pos = progressRef.current?.getPosition();
+      if (pos != null && pos > 0) livePosRef.current = pos;
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [livePosRef]);
 
   return { videoRef, progressRef };
 }
@@ -419,8 +512,8 @@ function useKeyboardControls(
 }
 
 function HlsPlayer(props: SharedPlayerProps) {
-  const { link, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
-  const { videoRef, progressRef } = useProgressBinding(link, reportProgress);
+  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
+  const { videoRef, progressRef } = useProgressBinding(link, reportProgress, livePosRef);
   const [mutedLocal, setMutedLocal] = useState(muted);
   const setMutedBoth = useCallback((m: boolean) => {
     setMutedLocal(m);
@@ -460,8 +553,9 @@ function HlsPlayer(props: SharedPlayerProps) {
       </video>
       <Controls
         link={link}
+        candidates={candidates}
         index={index}
-        total={total}
+        onSourcePick={onSourcePick}
         muted={mutedLocal}
         toggleMute={() => {
           setMutedLocal(!mutedLocal);
@@ -477,8 +571,8 @@ function HlsPlayer(props: SharedPlayerProps) {
 }
 
 function NativePlayer(props: SharedPlayerProps) {
-  const { link, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
-  const { videoRef, progressRef } = useProgressBinding(link, reportProgress);
+  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
+  const { videoRef, progressRef } = useProgressBinding(link, reportProgress, livePosRef);
   const [mutedLocal, setMutedLocal] = useState(muted);
   const setMutedBoth = useCallback((m: boolean) => {
     setMutedLocal(m);
@@ -507,8 +601,9 @@ function NativePlayer(props: SharedPlayerProps) {
       </video>
       <Controls
         link={link}
+        candidates={candidates}
         index={index}
-        total={total}
+        onSourcePick={onSourcePick}
         muted={mutedLocal}
         toggleMute={() => {
           setMutedLocal(!mutedLocal);

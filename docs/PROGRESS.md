@@ -167,3 +167,14 @@
       actions (clear all history / discard all downloads with confirm), providers table
       (name, plugin, tvTypes, hasMainPage) — rendered with 14 live providers
 - [x] `./gradlew test` BUILD SUCCESSFUL (setDownloadTotal once-only covered)
+- [x] **Source changer** (user-reported gap: no way to switch sources while one
+      plays): Controls now renders a source select (one option per candidate:
+      `i/N · extractor · quality`) plus ◀/▶ step buttons, wired to
+      Player.setIndex; HLS candidates now display their true `index/total`
+      (previously hardcoded 1/1). Position continuity on switch: the active
+      playhead is mirrored into a shared ref (~2x/s, no re-renders) and handed
+      to the next candidate as resume position — browser-verified on CineStream
+      "Love of Your Life" (209 candidates): 3/209 VaPlayer 872p @694s →
+      15/209 Voe 584p continuing at ~same timestamp, still playing, history
+      row advancing (749/6678); ◀/▶ button path also verified (15→16).
+- [x] `./gradlew test` BUILD SUCCESSFUL
