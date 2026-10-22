@@ -104,6 +104,26 @@ object PlaybackEngine {
         return if (headersB64.isBlank()) "$PROXIED_PATH?url=$enc" else "$PROXIED_PATH?url=$enc&h=$headersB64"
     }
 
+    /**
+     * v2 M3: is this failure just the HTTP peer going away (browser aborted a
+     * Range fetch, seek re-request, tab closed)? Those are NORMAL playback
+     * churn (Chromium closes connections constantly), so the streaming pumps
+     * report them quietly instead of spamming [api-error] INTERNAL lines.
+     */
+    fun isClientAbort(t: Throwable): Boolean {
+        if (t is kotlinx.coroutines.CancellationException) return true
+        if (t is java.io.IOException) {
+            val msg = (t.message ?: "").lowercase()
+            if (listOf("connection reset", "broken pipe", "stream closed", "cannot write to channel").any { msg.contains(it) }) {
+                return true
+            }
+            // io.ktor.util.cio.ChannelWriteException wraps the real cause
+            if (t.cause != null && t.javaClass.name.startsWith("io.ktor.")) return isClientAbort(t.cause!!)
+        }
+        return false
+    }
+
+
     /** URL of a proxied subtitle track (same header replay, converted to VTT). */
     fun subtitleProxied(url: String, headers: Map<String, String>): String {
         val h = headersEncoded(headers)
@@ -176,6 +196,9 @@ suspend fun ApplicationCall.passthrough(resp: okhttp3.Response, requireOk: Boole
                 }
                 out.flush()
             }
+        } catch (t: Throwable) {
+            // client aborts are normal playback churn (Range re-requests, seeks)
+            if (!PlaybackEngine.isClientAbort(t)) throw t
         } finally {
             runCatching { resp.close() }
         }

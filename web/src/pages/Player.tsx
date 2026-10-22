@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";import Hls from "hls.js";
-import type { StreamDto, SubtitleDto } from "../lib/api";
-import { createDownload, playbackCandidates, saveHistory, streamProxyUrl, subtitleProxyUrl } from "../lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Hls from "hls.js";
+import type { AudioTrackDto, StreamDto, SubtitleDto } from "../lib/api";
+import { createDownload, getAudioTracks, getStreams, playbackCandidates, saveHistory, streamProxyUrl, subtitleProxyUrl } from "../lib/api";
 import { toastError } from "../lib/toast";
 
 /** What the library needs to attribute watch progress + downloads to an item. */
@@ -33,7 +34,11 @@ export function Player({
   meta?: PlayerMeta;
   resumePosition?: number;
 }) {
-  const candidates = useMemo(() => playbackCandidates(links), [links]);
+  /** v2 M3: after a failed link is re-extracted, the fresh link set replaces
+   * the prop's (the parent doesn't need to know). */
+  const [freshLinks, setFreshLinks] = useState<StreamDto[] | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const candidates = useMemo(() => playbackCandidates(freshLinks ?? links), [links, freshLinks]);
   const [index, setIndex] = useState(0);
   const [muted, setMuted] = useState(false);
   const [downloadState, setDownloadState] = useState<string | null>(null);
@@ -59,6 +64,7 @@ export function Player({
     if (i < 0 || i >= candidates.length) return;
     const pos = livePosRef.current;
     setSwitchResume(pos != null && pos > 1 ? Math.floor(pos) : null);
+    setAudioPick(null); // audio ordinals belong to the previous source
     setIndex(i);
   }, [candidates.length]);
 
@@ -66,7 +72,82 @@ export function Player({
   const advance = useCallback(() => {
     const pos = livePosRef.current;
     setSwitchResume(pos != null && pos > 1 ? Math.floor(pos) : null);
+    setAudioPick(null); // ordinals of the old source mean nothing to the next
     setIndex(indexRef.current + 1);
+  }, []);
+
+  // ---- v2 M3: dead links self-heal -----------------------------------------
+  // Stream URLs can die mid-play (signed links expire, hosters 403). On the
+  // FIRST failure of a link we silently re-run the extractor once and swap in
+  // the same source's fresh URL; only after that do we advance to the next
+  // candidate. The ↺ button forces the same re-extract manually.
+
+  const candidatesRef = useRef<StreamDto[]>([]);
+  useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
+
+  const reExtractTried = useRef(new Set<string>());
+  useEffect(() => {
+    reExtractTried.current = new Set();
+    setFreshLinks(null);
+  }, [links]);
+
+  /** one failure action at a time (onError + hlsError can both fire) */
+  const failLock = useRef(0);
+
+  const retrySameSource = useCallback(async (manual: boolean): Promise<boolean> => {
+    const cur = candidatesRef.current[indexRef.current];
+    if (!cur || !meta) return false;
+    if (!manual) {
+      if (reExtractTried.current.has(cur.url)) return false;
+      reExtractTried.current.add(cur.url);
+    }
+    setRefreshing(true);
+    try {
+      const fresh = await getStreams(meta.provider, meta.episodeData, meta.url);
+      const same = fresh.links.filter((l) => l.source === cur.source && l.quality === cur.quality);
+      const match = same.find((l) => l.url !== cur.url) ?? same[0];
+      if (!match) return false;
+      const pos = livePosRef.current;
+      if (pos != null && pos > 1) setSwitchResume(Math.floor(pos));
+      // keep pointing at the same source inside the re-ranked list
+      const ni = playbackCandidates(fresh.links).findIndex((l) => l.url === match.url);
+      if (ni < 0) return false;
+      setFreshLinks(fresh.links);
+      setIndex(ni);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setRefreshing(false);
+    }
+  }, [meta]);
+
+  const handleFail = useCallback(() => {
+    const now = Date.now();
+    if (now - failLock.current < 1500) return;
+    failLock.current = now;
+    void (async () => {
+      if (await retrySameSource(false)) return;
+      advance();
+    })();
+  }, [retrySameSource, advance]);
+
+  const refreshSources = useCallback(() => {
+    void retrySameSource(true);
+  }, [retrySameSource]);
+
+  // ---- v2 M3: server-side audio language switching for muxed files ----------
+  // The picker reports a track ordinal; the player re-sources the stream with
+  // &audio=<ordinal>&start=<playhead> and the server remuxes (always -c copy).
+  // switchResume is pinned to 0 so the browser-side resume seek can't fire on
+  // top of the remux's own -ss (the fresh timeline starts at that point).
+  const [audioPick, setAudioPick] = useState<{ ord: number; pos: number } | null>(null);
+  useEffect(() => setAudioPick(null), [links]);
+
+  const chooseAudioTrack = useCallback((ord: number) => {
+    const pos = livePosRef.current;
+    setSwitchResume(0);
+    setAudioPick({ ord, pos: pos != null && pos > 1 ? Math.floor(pos) : 0 });
   }, []);
 
   const link = candidates[index];
@@ -139,11 +220,13 @@ export function Player({
       reportProgress={reportProgress}
       resumePosition={effectiveResume}
       subtitles={subtitles}
-      onFail={advance}
+      onFail={handleFail}
       index={index}
       total={candidates.length}
       onDownload={downloadCurrentLink}
       downloadState={downloadState}
+      refreshing={refreshing}
+      onRefresh={refreshSources}
     />
   ) : (
     <NativePlayer
@@ -156,11 +239,15 @@ export function Player({
       reportProgress={reportProgress}
       resumePosition={effectiveResume}
       subtitles={subtitles}
-      onFail={advance}
+      onFail={handleFail}
       index={index}
       total={candidates.length}
       onDownload={downloadCurrentLink}
       downloadState={downloadState}
+      refreshing={refreshing}
+      onRefresh={refreshSources}
+      audioPick={audioPick}
+      onAudioPick={chooseAudioTrack}
     />
   );
 }
@@ -183,6 +270,12 @@ type SharedPlayerProps = {
   total: number;
   onDownload: () => void;
   downloadState: string | null;
+  /** v2 M3: re-run the extractor for the current source (↺ button state) */
+  refreshing?: boolean;
+  onRefresh?: () => void;
+  /** v2 M3: server-side audio track pick (ordinal remuxed + playhead start) */
+  audioPick?: { ord: number; pos: number } | null;
+  onAudioPick?: (ord: number) => void;
 };
 
 /** Subtitle tracks (the same-origin /api/subtitle bridge converts SRT → WebVTT). */
@@ -398,7 +491,96 @@ function NativeAudioPicker({
   );
 }
 
-function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles, audio }: {
+/**
+ * v2 M3: language picker for muxed multi-audio FILES. Browsers can't switch
+ * tracks inside a Matroska container (Chromium doesn't even play the container
+ * without the server's remux), so switching happens server-side: pick a track,
+ * the player re-sources through <code>?audio=<ordinal>&start=<playhead></code>
+ * and the server remuxes with <code>-c copy</code>. Hidden whenever the browser
+ * exposes native <code>audioTracks</code> (Safari handles mkv itself) or when
+ * the probe finds nothing switchable.
+ */
+function ServerAudioPicker({
+  videoRef,
+  link,
+  picked,
+  onPick,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  link: StreamDto;
+  picked: number | null;
+  onPick: (ordinal: number) => void;
+}) {
+  const [tracks, setTracks] = useState<AudioTrackDto[] | null>(null);
+  const [nativeHandles, setNativeHandles] = useState(false);
+
+  useEffect(() => {
+    setTracks(null);
+    setNativeHandles(false);
+    let dead = false;
+    // If the browser can enumerate native tracks, the native picker wins
+    // (pure client switching). Chromium needs the server path regardless.
+    let ticks = 0;
+    const poll = window.setInterval(() => {
+      const el = videoRef.current as unknown as { audioTracks?: { length: number } } | null;
+      const len = el?.audioTracks?.length ?? 0;
+      if (len > 0) {
+        setNativeHandles(true);
+        window.clearInterval(poll);
+      } else if (++ticks > 8) {
+        window.clearInterval(poll);
+      }
+    }, 250);
+    getAudioTracks(link).then((t) => {
+      if (!dead) setTracks(t);
+    });
+    return () => {
+      dead = true;
+      window.clearInterval(poll);
+    };
+  }, [link, videoRef]);
+
+  if (nativeHandles || !tracks || tracks.length < 2) return null;
+
+  const label = (t: AudioTrackDto): string => {
+    try {
+      if (t.lang && t.lang !== "und") {
+        const Display = (
+          Intl as unknown as {
+            DisplayNames?: new (opts: { type: "language" }) => { of: (code: string) => string | undefined };
+          }
+        ).DisplayNames;
+        if (Display) {
+          const name = new Display({ type: "language" }).of(t.lang);
+          if (name && name !== t.lang) return name;
+        }
+      }
+    } catch {
+      /* DisplayNames unavailable — fall through to metadata */
+    }
+    return t.title || t.codec || `audio ${t.ordinal + 1}`;
+  };
+
+  const current = picked ?? tracks.find((t) => t.isDefault)?.ordinal ?? 0;
+
+  return (
+    <select
+      className="aud-pick"
+      value={String(current)}
+      onChange={(e) => onPick(Number(e.target.value))}
+      title="Audio language"
+      aria-label="Audio language"
+    >
+      {tracks.map((t) => (
+        <option key={t.ordinal} value={String(t.ordinal)}>
+          {label(t)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles, audio, refreshing, onRefresh }: {
   link: StreamDto;
   candidates: StreamDto[];
   index: number;
@@ -411,6 +593,9 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
   subtitles?: SubtitleDto[];
   /** player-specific audio picker (<HlsAudioPicker>/<NativeAudioPicker>) */
   audio?: React.ReactNode;
+  /** v2 M3: manual re-extract of the current source (self-heal backup) */
+  refreshing?: boolean;
+  onRefresh?: () => void;
 }) {
   const total = candidates.length;
   return (
@@ -452,6 +637,19 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
               aria-label="Next source"
             >
               ▶
+            </button>
+          </>
+        )}
+        {onRefresh && (
+          <>
+            {" "}
+            <button
+              onClick={onRefresh}
+              disabled={!!refreshing}
+              title="Refresh sources: re-extract fresh links for this episode"
+              aria-label="Refresh sources"
+            >
+              {refreshing ? "…" : "↺"}
             </button>
           </>
         )}
@@ -645,7 +843,7 @@ function useKeyboardControls(
 }
 
 function HlsPlayer(props: SharedPlayerProps) {
-  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
+  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState, refreshing, onRefresh } = props;
   const { videoRef, progressRef } = useProgressBinding(link, reportProgress, livePosRef);
   const [mutedLocal, setMutedLocal] = useState(muted);
   const setMutedBoth = useCallback((m: boolean) => {
@@ -706,13 +904,15 @@ function HlsPlayer(props: SharedPlayerProps) {
         videoRef={videoRef}
         subtitles={subtitles}
         audio={<HlsAudioPicker hls={hlsInstance} />}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
       />
     </div>
   );
 }
 
 function NativePlayer(props: SharedPlayerProps) {
-  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
+  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState, refreshing, onRefresh, audioPick, onAudioPick } = props;
   const { videoRef, progressRef } = useProgressBinding(link, reportProgress, livePosRef);
   const [mutedLocal, setMutedLocal] = useState(muted);
   const setMutedBoth = useCallback((m: boolean) => {
@@ -726,17 +926,32 @@ function NativePlayer(props: SharedPlayerProps) {
     progressRef.current?.setResume(resumePosition);
   }, [progressRef, resumePosition, link]);
 
+  /**
+   * v2 M3: the effective source. A picked audio ordinal remuxes the stream
+   * server-side; &start carries the captured playhead so the switch is
+   * seamless (the fresh timeline begins at the seek point, and the parent
+   * pinned switchResume to 0 so no browser-side resume seek can stack on it).
+   */
+  const streamSrc = useMemo(() => {
+    let src = streamProxyUrl(link);
+    if (audioPick) {
+      src += `&audio=${audioPick.ord}`;
+      if (audioPick.pos > 0) src += `&start=${audioPick.pos}`;
+    }
+    return src;
+  }, [link, audioPick]);
+
   return (
     <div className="player">
       <video
-        key={streamProxyUrl(link)}
+        key={streamSrc}
         ref={videoRef}
         controls
         autoPlay
         muted={mutedLocal}
         playsInline
         onError={onFail}
-        src={streamProxyUrl(link)}
+        src={streamSrc}
       >
         <SubtitleTracks subtitles={subtitles} />
       </video>
@@ -754,7 +969,16 @@ function NativePlayer(props: SharedPlayerProps) {
         downloadState={downloadState}
         videoRef={videoRef}
         subtitles={subtitles}
-        audio={<NativeAudioPicker videoRef={videoRef} link={link} />}
+        audio={
+          <ServerAudioPicker
+            videoRef={videoRef}
+            link={link}
+            picked={audioPick?.ord ?? null}
+            onPick={(ord) => onAudioPick?.(ord)}
+          />
+        }
+        refreshing={refreshing}
+        onRefresh={onRefresh}
       />
     </div>
   );

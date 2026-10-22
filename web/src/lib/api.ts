@@ -232,6 +232,37 @@ function proxyUrl(base: string, url: string, headers: Record<string, string>): s
   return `${base}?url=${encodeURIComponent(url)}${h}${authQuery()}`;
 }
 
+// ---------- audio language switching (v2 M3) -----------------------------------
+
+/** One audio stream of a muxed FILE link, as probed server-side by ffprobe. */
+export type AudioTrackDto = {
+  ordinal: number; // the ?audio= param the server remuxes for
+  streamIndex: number;
+  lang: string | null; // ISO-639 code muxed in the container (hin/eng/kor...)
+  title: string | null; // track title metadata, when present
+  codec: string | null;
+  channels: number | null;
+  isDefault: boolean;
+};
+
+function audioTracksUrl(link: Pick<StreamDto, "url" | "headers">): string {
+  return proxyUrl("/api/stream/audio-tracks", link.url, link.headers ?? {});
+}
+
+/**
+ * Audio streams of a direct file link, probed through the same engine path
+ * playback uses (probe truth == playback truth). Empty list on failure or when
+ * the link has nothing switchable — the player then hides the language picker
+ * and the default-stream remux mode keeps playback working regardless.
+ */
+export async function getAudioTracks(link: Pick<StreamDto, "url" | "headers">): Promise<AudioTrackDto[]> {
+  try {
+    return await json<AudioTrackDto[]>(audioTracksUrl(link));
+  } catch {
+    return [];
+  }
+}
+
 /** Ordered playback candidates: HLS first (proxy + hls.js), then direct files. */
 export function playbackCandidates(links: StreamDto[]): StreamDto[] {
   const typeRank = (t: string) =>

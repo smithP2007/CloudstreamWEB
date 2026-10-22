@@ -148,4 +148,55 @@ switchable here; features read them per-request, no restart):
 POST bodies may include any subset (`{"gpuAccel":"on"}`); `gpuAccel` outside
 `auto|on|off` → `400 {error:"REPO_INVALID"}` without persisting anything.
 
+## Audio language switching (v2 M3)
+
+Muxed multi-audio files (Hindi/English/Korean dubs in one MKV) get a language
+selector in Chromium, which cannot even play the Matroska container without
+help. Two mechanisms, both through the same engine path so **probe truth ==
+playback truth** (ffprobe/ffmpeg read the bytes through `GET /api/stream`
+itself, via a loopback self-connection with `raw=1`).
+
+```
+GET /api/stream/audio-tracks?url=<upstream>&h=<b64-headers>
+   → [{ordinal, streamIndex, lang, title, codec, channels, isDefault}, ...]
+```
+
+- Probed with ffprobe from the engine self-proxy input; cached per linkId
+  (`dataDir/cache/probe/<linkId>.json`, TTL 6 h). `501 FFMPEG_MISSING` when
+  ffprobe is absent, `504 PROBE_TIMEOUT` when the probe fails.
+- ordinals are the audio-stream order (0 = first) — also the `?audio=` value.
+
+```
+GET /api/stream?url=<upstream>&h=<b64>&[audio=<ordinal>][&start=<sec>][&raw=1]
+```
+
+Branches for a direct file (in decision order):
+
+| condition | behavior |
+|---|---|
+| `raw=1` | byte passthrough of the ORIGINAL container (self-connections, tests) |
+| `audio=<ordinal>` present | remux `-c copy` → fragmented MP4 (`-map 0:v:0 -map 0:a:<ordinal>`); `501 FFMPEG_MISSING` if ffmpeg absent |
+| mkv container + `audioRemux` toggle on | DEFAULT remux with the mux's default audio (`isDefault` track, else first) — this is what makes Chromium play muxed MKV at all |
+| otherwise | byte passthrough (headers + Range replayed 1:1, as in M1) |
+| m3u8 (content type or extension) | nested-URL playlist rewrite, no remux |
+
+Remux output: `video/mp4` with `empty_moov+frag_keyframe+default_base_moof`
+(streamable fragmented MP4; Chromium plays it natively). `&start=<sec>`
+adds `-ss <sec>` before the input (fast mv/cue-based seek) so a language
+switch can resume at the captured playhead — the fresh stream's timeline
+starts at that point (the SPA pins its resume-seek to 0 on switch).
+
+Upstream failure classification (both stream and subtitle routes):
+`403 → UPSTREAM_403 (502)`, `410 → URL_EXPIRED (410)`, else `PROVIDER_ERROR
+(502)` — the SPA reacts to the first two by silently re-running the extractor
+once for the same source and swapping in the fresh URL (a manual `↺ refresh`
+button bypasses the once-guard).
+
+Notes:
+- `-c copy` only fixes the CONTAINER. Files whose codec the browser cannot
+  decode at all (H.264 High10 in the Hindmoviez 10bit mirrors) need the M5
+  live-transcode path.
+- The remux keeps the container's chapter track (mp4 `text` data stream) —
+  tiny and ignored by browsers. Subtitle streams are intentionally dropped.
+
 

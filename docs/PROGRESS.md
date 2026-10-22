@@ -292,3 +292,51 @@ hangs off (user requirement: everything new is an on/off switch in Settings).
       invalid gpuAccel 400 recoil, capabilities shape) — settings namespace
       reset around each test for determinism.
 - Gate: `./gradlew test` green; npm run build green.
+
+## v2 — M3 gate: audio language switching + self-healing streams (2026-10-22)
+
+Scope: muxed multi-audio files (Hindmoviez hin/eng/kor) play in Chromium and
+switch languages; dead links heal themselves.
+
+Server:
+- [x] `engine/Remux`: ffprobe audio listing through the engine's own proxy
+      (self-connection with `raw=1`; probe truth == playback truth), cached per
+      linkId in `cache/probe/<id>.json` (TTL 6h); fragmented-MP4 remux command
+      builder (`-map 0:v:0 -map 0:a:<ordinal> -c copy`, `-ss` fast-seek,
+      `empty_moov+frag_keyframe+default_base_moof` on stdout); top-level
+      `respondRemux` pump (destroys ffmpeg on client abort, mirrors stderr).
+- [x] `GET /api/stream/audio-tracks` (501 FFMPEG_MISSING / 504 PROBE_TIMEOUT).
+- [x] `GET /api/stream` branches: explicit `audio=<ordinal>` remux; mkv +
+      audioRemux-toggle DEFAULT remux (Chromium has no Matroska support — the
+      headline fix); `raw=1` recursion guard for self-connections; m3u8
+      rewrite untouched.
+- [x] Upstream failure classification: 403→UPSTREAM_403, 410→URL_EXPIRED,
+      else PROVIDER_ERROR (M0 taxonomy's first live use of the new codes).
+- [x] Client-abort classification (`isClientAbort`): aborted streams log one
+      quiet line instead of an [api-error] INTERNAL stacktrace (verified by
+      curl abort: api-error count unchanged).
+SPA:
+- [x] api.ts `getAudioTracks` + AudioTrackDto; `ServerAudioPicker` in
+      NativePlayer (hidden when the browser exposes native audioTracks or when
+      <2 tracks; labels via Intl.DisplayNames with title/codec fallback).
+- [x] Language pick re-sources the stream with `&audio=<ordinal>&start=<pos>`
+      (parent pins switchResume=0 so the browser resume-seek can't stack on
+      `-ss`); switching sources/episodes resets the pick.
+- [x] Self-healing: first failure of a link silently re-runs the extractor
+      once (getStreams) and swaps the same source's fresh URL in (re-ranked
+      candidates, playhead kept); only then advance to the next candidate;
+      `↺ refresh` button forces a re-extract manually.
+Verification:
+- [x] RemuxTest (pure, 5) + RemuxIntegrationTest (5): synthetic two-audio mkv
+      (ffmpeg lavfi — no copyrighted bytes) served by a Range-capable JDK
+      upstream through a REAL Netty server + the engine self-proxy: audio
+      listing, `audio=1` → fragmented MP4 whose ffprobe shows exactly one
+      h264 + one aac (eng), default → hin, `start=1` still streamable,
+      `raw=1` returns original EBML bytes. Assumption-skipped without
+      ffmpeg (CI).
+- [x] LIVE Hindmoviez S2E5: audio-tracks returns hin/eng/kor ordinals 0-2;
+      default remux streams fragmented MP4 (ftyp verified) playing in
+      Chromium; the picker appears, picking English re-sources with
+      `audio=1&start=51` and playback resumes at the seek point (readyState 4).
+- Gate: `./gradlew test` 64 green / 0 fail (+1 environmental skip),
+  `npm run build` green.

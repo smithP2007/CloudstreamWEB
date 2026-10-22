@@ -138,11 +138,12 @@ class StreamProxyRoutingTest {
     }
 
     @Test
-    fun `upstream failure is a typed body with request id`() = testApplication {
+    fun `upstream 403 is typed as UPSTREAM_403 with request id`() = testApplication {
         application { bootProxy() }
         val resp = client.get(proxied("/denied"))
         assertEquals(HttpStatusCode.BadGateway, resp.status)
-        assertEquals("PROVIDER_ERROR", err(resp.bodyAsText()))
+        val body = Json.parseToJsonElement(resp.bodyAsText()).jsonObject
+        assertEquals("UPSTREAM_403", body["error"]!!.jsonPrimitive.content)
         assertNotNull(resp.headers["X-Req-Id"])
     }
 
