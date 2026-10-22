@@ -162,6 +162,21 @@ function PlaybackBackends() {
           <label className="toggle-row">
             <input
               type="checkbox"
+              checked={settings.data.bufferWatchdog}
+              disabled={busy}
+              onChange={(e) => void flip({ bufferWatchdog: e.target.checked })}
+            />
+            <span>
+              <strong>Buffer watchdog</strong>
+              <span className="muted small">
+                when a playing stream stalls too long, redo it once automatically, then move to the next source
+              </span>
+            </span>
+          </label>
+
+          <label className="toggle-row">
+            <input
+              type="checkbox"
               checked={settings.data.liveTranscode}
               disabled={busy || !cap?.liveTranscodeAvailable}
               onChange={(e) => void flip({ liveTranscode: e.target.checked })}

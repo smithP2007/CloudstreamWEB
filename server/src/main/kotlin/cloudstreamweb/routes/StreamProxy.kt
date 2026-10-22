@@ -27,6 +27,8 @@ import io.ktor.server.routing.get
  *   else -> PROVIDER_ERROR
  *
  *   GET /api/stream?url=<upstream>&h=<b64-headers>[&audio=<ordinal>][&start=<sec>][&raw=1]
+ *   GET /api/stream/audio-tracks?url=<upstream>&h=<b64-headers>   (501/504 on failure)
+ *   GET /api/stream/probe?url=<upstream>&h=<b64-headers>          (M4 decode truth)
  *
  * Direct-file branches:
  *  - `audio=<ordinal>`            -> ffmpeg remux (`-c copy`) into fragmented
@@ -63,6 +65,16 @@ object StreamProxy {
             val url = rawUrl!!
             val headers = PlaybackEngine.decodeHeaders(call.request.queryParameters["h"])
             call.respond(Remux.probeAudio(url, headers, PlaybackEngine.linkId(url, headers)))
+        }
+
+        get("/api/stream/probe") {
+            // M4 decode truth: container/video-face/audio/subs for the SPA's
+            // badges + ranking. Cached per linkId; 501/504 same as audio-tracks.
+            val rawUrl = call.request.queryParameters["url"]
+            requireHttpUrl(rawUrl)
+            val url = rawUrl!!
+            val headers = PlaybackEngine.decodeHeaders(call.request.queryParameters["h"])
+            call.respond(Remux.probeLink(url, headers, PlaybackEngine.linkId(url, headers)))
         }
 
         get("/api/stream") {

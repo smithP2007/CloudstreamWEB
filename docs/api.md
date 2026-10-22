@@ -199,4 +199,58 @@ Notes:
 - The remux keeps the container's chapter track (mp4 `text` data stream) —
   tiny and ignored by browsers. Subtitle streams are intentionally dropped.
 
+## Decode truth: probe + badges + ranking (v2 M4)
+
+```
+GET /api/stream/probe?url=<upstream>&h=<b64-headers>
+   → LinkProbeDto {container, formatName, durationSec, bitRate,
+                   video:{codec,profile,width,height,bitDepth,hdr,fps},
+                   audio:[AudioTrackDto], subtitlesCount, streamed}
+```
+
+- Full `ffprobe -show_streams -show_format` through the same `raw=1`
+  self-proxy (probe truth == playback truth), cached per linkId as
+  `<linkId>.probe.json` (TTL 6h — separate file from the audio cache).
+- Video facts come from the first video stream: `pix_fmt yuv420p10le` →
+  10-bit; `color_transfer smpte2084` / `arib-std-b67` / bt2020 primaries →
+  HDR; `avg_frame_rate 24000/1001` → 23.976 fps. `container` is the
+  ffprobe format family (matroska → mkv, mov → mp4).
+- **Probe budget is 45 s at process level** (`waitFor` + `destroyForcibly`):
+  badges must never wait minutes for a stuck hoster — and the stdout/stderr
+  drains run on daemon threads so a never-EOF-ing process cannot pin a
+  request-handling thread (this deadlock was found live: it wedged ALL
+  request processing until restart). The audio probe keeps the 300 s cap
+  because it gates the default remux, not cosmetic truth.
+- HLS links short-circuit to `{streamed:true}` (no spawn — manifest
+  candidates are not the file-remux path).
+- Typed failures: `501 FFMPEG_MISSING` (no ffprobe), `504 PROBE_TIMEOUT`
+  (spawn failed/timeout — usually a dead mirror; that state is honest
+  UNKNOWN, the SPA treats it as "no data", never as "bad codec").
+
+SPA (`probeSources` toggle, default on — OFF disables every badge and the
+reranking):
+- Player fetches `/api/stream/probe` for every distinct FILE candidate
+  (≤4 concurrent; the currently playing link first), each result ALSO fed
+  through `MediaCapabilities.decodingInfo` (ffmpeg strings → codec
+  strings: h264 → avc1.640034, hevc → hvc1…, vp9 → vp09…, av1 → av01…).
+  Chromium software-decodes High10 H.264, so 10-bit h264 is still asked.
+- Picker badges per candidate: `✓ res codec [bits] [HDR]` (supported +
+  smooth), `△ …` (supported, software decode), `✗ …` (unsupported),
+  `HLS` (manifest), `? no probe` (probe failed — unknown, not bad).
+- **Playable-first reranking**: applied exactly ONCE per extraction, at
+  whatever truth exists 25 s in (stragglers must not hold the ranking
+  hostage); stable sort scores: smooth 0 < software-decode 1 < neutral
+  unknown 4 < unsupported 5. The currently playing link keeps playing —
+  its index is remapped by url identity, only the PICKER order changes.
+- `bufferWatchdog` toggle (default on): after playback has started, a
+  stall with ZERO buffered growth for ~10 s gets ONE cache-busted reload
+  (`&cb=<n>`); still no growth ~40 s after that → the self-heal/advance
+  path. Armed only after real playback started (hoster first-byte
+  latency must not trip it).
+- "What am I watching?" drawer under the controls: container/duration/
+  bitrate face, codec profile + resolution + fps + bit-depth + HDR, the
+  audio tracks with language names, subtitle count, and the browser's
+  decode verdict in plain words — or an honest "probe failed"/"HLS"
+  sentence when truth is unavailable.
+
 

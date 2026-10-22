@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
-import type { AudioTrackDto, StreamDto, SubtitleDto } from "../lib/api";
-import { createDownload, getAudioTracks, getStreams, playbackCandidates, saveHistory, streamProxyUrl, subtitleProxyUrl } from "../lib/api";
+import type { AudioTrackDto, LinkProbe, StreamDto, SubtitleDto, VideoProbe } from "../lib/api";
+import { createDownload, getAudioTracks, getLinkProbe, getSettings, getStreams, playbackCandidates, saveHistory, streamProxyUrl, subtitleProxyUrl } from "../lib/api";
 import { toastError } from "../lib/toast";
 
 /** What the library needs to attribute watch progress + downloads to an item. */
@@ -59,14 +59,36 @@ export function Player({
   const indexRef = useRef(0);
   useEffect(() => { indexRef.current = index; }, [index]);
 
+  // ---- v2 M4: decode truth ---------------------------------------------------
+  // Every FILE candidate gets an ffprobe (server-cached through the engine
+  // proxy, probe truth == playback truth) plus the browser's own
+  // MediaCapabilities verdict for the probed codec face. probeSources off
+  // disables all of it: no probes, no badges, no reranking, no drawer.
+  const probeSettings = usePlaybackSettings();
+
+  /** mirrors the currently playing url — read by useProbes so the active link
+   * is probed first (badges + drawer fill while the rest are still running). */
+  const currentUrlRef = useRef<string | null>(null);
+
+  const { probes, done: probesDone } = useProbes(candidates, probeSettings.probeSources, currentUrlRef);
+  const ordered = usePlayableFirstOrder(candidates, probes, probesDone, indexRef, setIndex);
+  const playerCandidates = ordered ?? candidates;
+  currentUrlRef.current = playerCandidates[index]?.url ?? null;
+
+  /** badge text for a candidate ("": off or no probe data) */
+  const badgeFor = useCallback(
+    (c: StreamDto): string => (probeSettings.probeSources ? describeDecode(probes.get(c.url)) : ""),
+    [probeSettings.probeSources, probes],
+  );
+
   /** capture where we are, then jump to candidate i */
   const pickSource = useCallback((i: number) => {
-    if (i < 0 || i >= candidates.length) return;
+    if (i < 0 || i >= playerCandidates.length) return;
     const pos = livePosRef.current;
     setSwitchResume(pos != null && pos > 1 ? Math.floor(pos) : null);
     setAudioPick(null); // audio ordinals belong to the previous source
     setIndex(i);
-  }, [candidates.length]);
+  }, [playerCandidates.length]);
 
   /** stable advance: components keep it in their load effect deps */
   const advance = useCallback(() => {
@@ -150,7 +172,12 @@ export function Player({
     setAudioPick({ ord, pos: pos != null && pos > 1 ? Math.floor(pos) : 0 });
   }, []);
 
-  const link = candidates[index];
+  const link = playerCandidates[index];
+
+  /** v2 M4: "What am I watching?" block — the current link's probe truth. */
+  const watchInfo = probeSettings.probeSources && link ? (
+    <LinkWatchInfo info={link.linkType === "M3U8" ? HLS_INFO : (probes.get(link.url) ?? null)} />
+  ) : null;
 
   /** Watch-progress → /api/library/history (server auto-finishes near the end). */
   const reportProgress = useCallback(
@@ -212,7 +239,7 @@ export function Player({
   return link.linkType === "M3U8" ? (
     <HlsPlayer
       link={link}
-      candidates={candidates}
+      candidates={playerCandidates}
       onSourcePick={pickSource}
       livePosRef={livePosRef}
       muted={muted}
@@ -222,16 +249,19 @@ export function Player({
       subtitles={subtitles}
       onFail={handleFail}
       index={index}
-      total={candidates.length}
+      total={playerCandidates.length}
       onDownload={downloadCurrentLink}
       downloadState={downloadState}
       refreshing={refreshing}
       onRefresh={refreshSources}
+      badgeFor={badgeFor}
+      watchdog={probeSettings.bufferWatchdog}
+      watchInfo={watchInfo}
     />
   ) : (
     <NativePlayer
       link={link}
-      candidates={candidates}
+      candidates={playerCandidates}
       onSourcePick={pickSource}
       livePosRef={livePosRef}
       muted={muted}
@@ -241,13 +271,16 @@ export function Player({
       subtitles={subtitles}
       onFail={handleFail}
       index={index}
-      total={candidates.length}
+      total={playerCandidates.length}
       onDownload={downloadCurrentLink}
       downloadState={downloadState}
       refreshing={refreshing}
       onRefresh={refreshSources}
       audioPick={audioPick}
       onAudioPick={chooseAudioTrack}
+      badgeFor={badgeFor}
+      watchdog={probeSettings.bufferWatchdog}
+      watchInfo={watchInfo}
     />
   );
 }
@@ -276,6 +309,12 @@ type SharedPlayerProps = {
   /** v2 M3: server-side audio track pick (ordinal remuxed + playhead start) */
   audioPick?: { ord: number; pos: number } | null;
   onAudioPick?: (ord: number) => void;
+  /** v2 M4: badge text for a candidate option ("": off or no probe data) */
+  badgeFor?: (c: StreamDto) => string;
+  /** v2 M4: buffer watchdog enabled (settings toggle) */
+  watchdog?: boolean;
+  /** v2 M4: "What am I watching?" block (current link's probe truth) */
+  watchInfo?: React.ReactNode;
 };
 
 /** Subtitle tracks (the same-origin /api/subtitle bridge converts SRT → WebVTT). */
@@ -580,7 +619,364 @@ function ServerAudioPicker({
   );
 }
 
-function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles, audio, refreshing, onRefresh }: {
+// ---------- v2 M4: decode truth (probes, badges, ranking, drawer, watchdog) ----
+
+/** Server ffprobe result + the browser's own decode verdict for one link. */
+export type ProbeInfo = {
+  probe: LinkProbe | null;       // null: probe failed server-side (timeout etc.)
+  verdict: DecodeVerdict | null; // null: no MediaCapabilities answer for the codec
+};
+
+export type DecodeVerdict = {
+  supported: boolean;
+  smooth: boolean;
+  powerEfficient: boolean;
+};
+
+/** Synthetic info for the drawer when the current link is HLS (never probed). */
+const HLS_INFO: ProbeInfo = {
+  verdict: null,
+  probe: {
+    container: null,
+    formatName: null,
+    durationSec: null,
+    bitRate: null,
+    video: null,
+    audio: [],
+    subtitlesCount: null,
+    streamed: true,
+  },
+};
+
+/**
+ * MediaCapabilities config string for a probed video face. null for codecs we
+ * can't describe (mpeg2 etc.) — those keep probed facts in badges but get no
+ * ✓/✗ verdict. Chromium software-decodes High10 H.264, so 10-bit h264 is still
+ * described with an avc1 string.
+ */
+function mediaTypeFor(v: VideoProbe): string | null {
+  switch (v.codec) {
+    case "h264":
+      return 'video/mp4; codecs="avc1.640034"'; // High@5.2
+    case "hevc":
+      return 'video/mp4; codecs="hvc1.1.6.L153.B0"';
+    case "vp9":
+      return (v.bitDepth === 10 || v.bitDepth === 12)
+        ? 'video/mp4; codecs="vp09.00.10.10"'
+        : 'video/mp4; codecs="vp09.00.10.08"';
+    case "av1":
+      return 'video/mp4; codecs="av01.0.06M.08"';
+    default:
+      return null;
+  }
+}
+
+/** The browser's answer to "can I decode this?" for a probed video. */
+async function decodeVerdictOf(probe: LinkProbe): Promise<DecodeVerdict | null> {
+  const v = probe.video;
+  if (probe.streamed || !v) return null;
+  const mime = mediaTypeFor(v);
+  if (!mime) return null;
+  type McLike = {
+    decodingInfo?: (
+      config: unknown,
+    ) => Promise<{ supported: boolean; smooth: boolean; powerEfficient: boolean }>;
+  };
+  const mc = (navigator as unknown as { mediaCapabilities?: McLike }).mediaCapabilities;
+  if (!mc?.decodingInfo) return null;
+  const config = {
+    type: "file",
+    video: {
+      contentType: mime,
+      width: v.width ?? 1280,
+      height: v.height ?? 720,
+      bitrate: probe.bitRate ?? 3_000_000,
+      framerate: v.fps && v.fps > 0 ? Math.min(240, v.fps) : 30,
+    },
+  };
+  try {
+    const info = await mc.decodingInfo(config);
+    return { supported: info.supported, smooth: info.smooth, powerEfficient: info.powerEfficient };
+  } catch {
+    return null;
+  }
+}
+
+/** Probe every distinct FILE candidate (≤4 concurrent); the preferred (currently
+ * playing) link is probed first. HLS links are skipped — the server short-
+ * circuits them to `streamed` and there's nothing to learn for badges. */
+function useProbes(
+  candidates: StreamDto[],
+  enabled: boolean,
+  preferredRef: { current: string | null },
+): { probes: Map<string, ProbeInfo>; done: boolean } {
+  const [probes, setProbes] = useState<Map<string, ProbeInfo>>(new Map());
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) {
+      setProbes(new Map());
+      setDone(false);
+      return;
+    }
+    const seen = new Set<string>();
+    const targets: StreamDto[] = [];
+    for (const c of candidates) {
+      if (c.linkType === "M3U8" || seen.has(c.url)) continue;
+      seen.add(c.url);
+      targets.push(c);
+    }
+    const preferred = preferredRef.current;
+    if (preferred) {
+      targets.sort((a, b) => (a.url === preferred ? -1 : 0) - (b.url === preferred ? -1 : 0));
+    }
+    if (targets.length === 0) {
+      setProbes(new Map());
+      setDone(true);
+      return;
+    }
+    setDone(false);
+    let dead = false;
+    const acc = new Map<string, ProbeInfo>();
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < targets.length) {
+        const c = targets[cursor++];
+        if (dead) return;
+        const probe = await getLinkProbe(c);
+        if (dead) return;
+        const verdict = probe ? await decodeVerdictOf(probe) : null;
+        if (dead) return;
+        acc.set(c.url, { probe, verdict });
+        setProbes(new Map(acc));
+      }
+    };
+    void Promise.all([worker(), worker(), worker(), worker()]).then(() => {
+      if (!dead) setDone(true);
+    });
+    return () => { dead = true; };
+  }, [candidates, enabled]); // preferredRef is read once per batch on purpose
+  return { probes, done };
+}
+
+/** 0 = certainly smooth … 5 = certainly undecodable; ties keep original order. */
+function decodeScore(c: StreamDto, probes: Map<string, ProbeInfo>): number {
+  const info = probes.get(c.url);
+  if (!info) return 4; // HLS or not probed yet
+  const v = info.verdict;
+  // any link without usable truth (probe failed, HLS, no video, unknown codec)
+  // stays NEUTRAL: a timed-out probe usually means a dead mirror — it must not
+  // outrank anything, and unknown codec facts can't be trusted for ranking
+  if (!v || !info.probe || info.probe.streamed || !info.probe.video) return 4;
+  if (!v.supported) return 5;
+  return v.smooth ? 0 : 1;
+}
+
+/** Playable-first stable reorder. */
+function rankPlayableFirst(cands: StreamDto[], probes: Map<string, ProbeInfo>): StreamDto[] {
+  return [...cands].sort((a, b) => decodeScore(a, probes) - decodeScore(b, probes));
+}
+
+/**
+ * Applies [rankPlayableFirst] ONCE per candidate batch (never re-shuffles
+ * mid-play), after the whole probe batch has finished; only picker order
+ * changes — the currently playing link keeps playing (its index is remapped
+ * by url identity).
+ */
+function usePlayableFirstOrder(
+  candidates: StreamDto[],
+  probes: Map<string, ProbeInfo>,
+  done: boolean,
+  indexRef: { current: number },
+  setIndex: (i: number) => void,
+): StreamDto[] | null {
+  const [ordered, setOrdered] = useState<StreamDto[] | null>(null);
+  const applied = useRef(false);
+  /** non-zero after the batch deadline — ordering fires even if probes lag */
+  const [deadline, setDeadline] = useState(0);
+
+  // a new candidate batch (new extraction) re-arms ranking + drops the order
+  useEffect(() => {
+    applied.current = false;
+    setOrdered(null);
+    const id = window.setTimeout(() => {
+      // probe stragglers (slow hosters) must not hold the ranking hostage:
+      // after 25s order by whatever truth exists (unprobed stays neutral)
+      setDeadline(Date.now());
+    }, 25_000);
+    return () => window.clearTimeout(id);
+  }, [candidates]);
+
+  useEffect(() => {
+    if (applied.current) return;
+    if (!done && deadline === 0) return;
+    applied.current = true;
+    if (probes.size === 0) return;
+    const next = rankPlayableFirst(candidates, probes);
+    setOrdered(next);
+    const current = candidates[indexRef.current] ?? null;
+    if (current) {
+      const ni = next.findIndex((c) => c.url === current.url);
+      if (ni >= 0 && ni !== indexRef.current) setIndex(ni);
+    }
+    // candidates/indexRef/setIndex are stable within a batch on purpose
+  }, [done, deadline, probes]);
+  return ordered;
+}
+
+/** Picker-option badge: mark + codec face, e.g. "✓ h264 1080p 10bit". */
+function describeDecode(info?: ProbeInfo | null): string {
+  if (!info) return "";
+  if (!info.probe) return "? no probe";
+  if (info.probe.streamed) return "HLS";
+  const v = info.probe.video;
+  if (!v) return "? no video";
+  const res =
+    v.height != null
+      ? v.height >= 2160 ? "4k" : v.height >= 400 ? `${v.height}p` : `${v.height}`
+      : "";
+  const bits = v.bitDepth != null && v.bitDepth > 8 ? `${v.bitDepth}bit` : "";
+  const hdr = v.hdr ? "HDR" : "";
+  const codec = v.codec ?? "";
+  const face = [res, codec, bits, hdr].filter(Boolean).join(" ");
+  let mark = "";
+  if (info.verdict) {
+    if (!info.verdict.supported) mark = "✗ ";
+    else if (info.verdict.smooth) mark = "✓ ";
+    else mark = "△ "; // supported but not "smooth" (software decode)
+  }
+  return mark + face;
+}
+
+function verdictSentence(v: DecodeVerdict | null): string {
+  if (!v) return "not known — this browser didn't answer for this codec";
+  if (!v.supported) return "NOT supported by this browser — this source was ranked last for a reason";
+  return v.smooth
+    ? "supported and expected to play smoothly"
+    : "supported via software decode — may stutter on weak hardware";
+}
+
+/** v2 M4 drawer: the probe truth of the current link, human-readable. */
+function LinkWatchInfo({ info }: { info: ProbeInfo | null }) {
+  return (
+    <details className="watch-info">
+      <summary>What am I watching?</summary>
+      {!info ? (
+        <p className="muted small">probing this source…</p>
+      ) : !info.probe ? (
+        <p className="muted small">no probe data for this link (server probe failed)</p>
+      ) : info.probe.streamed || !info.probe.video ? (
+        <p className="muted small">streamed playlist (HLS) — per-file details aren't probed</p>
+      ) : (
+        (() => {
+          const p = info.probe;
+          const v = p.video!;
+          const audio = p.audio.map((t) => t.lang && t.lang !== "und" ? t.lang : t.title ?? `#${t.ordinal + 1}`);
+          return (
+            <ul>
+              <li>
+                <b>container:</b> {p.container ?? "?"}
+                {p.durationSec != null ? ` · ${Math.round(p.durationSec / 60)} min` : ""}
+                {p.bitRate != null ? ` · ${Math.round((p.bitRate / 1_000_000) * 10) / 10} Mb/s` : ""}
+              </li>
+              <li>
+                <b>video:</b> {v.codec} {v.profile ?? ""}
+                {v.width != null && v.height != null ? ` · ${v.width}×${v.height}` : ""}
+                {v.fps ? ` @ ${v.fps.toFixed(1)}fps` : ""}
+                {v.bitDepth != null && v.bitDepth > 8 ? ` · ${v.bitDepth}-bit` : ""}
+                {v.hdr ? " · HDR" : ""}
+              </li>
+              {p.audio.length > 0 && (
+                <li><b>audio:</b> {p.audio.length} track{p.audio.length > 1 ? "s" : ""}{audio.length ? ` (${audio.join(", ")})` : ""}</li>
+              )}
+              {p.subtitlesCount != null && <li><b>subtitles:</b> {p.subtitlesCount}</li>}
+              <li><b>browser decode:</b> {verdictSentence(info.verdict)}</li>
+            </ul>
+          );
+        })()
+      )}
+    </details>
+  );
+}
+
+/** Settings for the player portion of playback toggles; server defaults win
+ * while loading (probe+watchdog are safe defaults). */
+function usePlaybackSettings(): { probeSources: boolean; bufferWatchdog: boolean } {
+  const [s, setS] = useState({ probeSources: true, bufferWatchdog: true });
+  useEffect(() => {
+    let dead = false;
+    getSettings()
+      .then((v) => {
+        if (!dead) setS({ probeSources: v.probeSources, bufferWatchdog: v.bufferWatchdog });
+      })
+      .catch(() => { /* unreachable server → benign defaults */ });
+    return () => { dead = true; };
+  }, []);
+  return s;
+}
+
+/**
+ * v2 M4: mid-play stall monitor for direct-file playback. Tolerates the
+ * (hoster-real) slow rebuffering; armed only after playback actually started.
+ * Stall with ZERO buffered growth for ~10s → one cache-busted reload of the
+ * same source; still zero growth ~40s after that → self-heal/advance path.
+ */
+function useBufferWatchdog(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  enabled: boolean,
+  srcKey: string,
+  onReload: () => void,
+  onGiveUp: () => void,
+) {
+  const reloadRef = useRef(onReload);
+  const giveUpRef = useRef(onGiveUp);
+  reloadRef.current = onReload;
+  giveUpRef.current = onGiveUp;
+
+  /** links surviving renewals; the [link] effect resets them */
+  const stall = useRef({ since: 0, lastEnd: 0, reloaded: false });
+  useEffect(() => {
+    stall.current = { since: 0, lastEnd: 0, reloaded: false };
+  }, [srcKey]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const id = window.setInterval(() => {
+      if (!video || video.paused) {
+        stall.current.since = 0;
+        return;
+      }
+      const end = video.buffered.length
+        ? video.buffered.end(video.buffered.length - 1)
+        : 0;
+      const grew = end > stall.current.lastEnd + 0.25;
+      const started = video.currentTime > 0.5 || end > 5;
+      stall.current.lastEnd = Math.max(stall.current.lastEnd, end);
+      if (!started || grew || video.seeking) {
+        stall.current.since = 0;
+        if (grew) stall.current.reloaded = false; // recovered: rearms future reload
+        return;
+      }
+      if (stall.current.since === 0) stall.current.since = Date.now();
+      const stuck = Date.now() - stall.current.since;
+      if (stuck < 10_000) return;
+      if (!stall.current.reloaded) {
+        stall.current.reloaded = true;
+        stall.current.since = 0;
+        console.info("[watchdog] stalled 10s — cache-busting reload of the same source");
+        reloadRef.current();
+      } else if (stuck > 40_000) {
+        console.info("[watchdog] stalled 40s after reload — treating as dead link");
+        giveUpRef.current();
+      }
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [enabled, videoRef, srcKey]);
+}
+
+function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles, audio, refreshing, onRefresh, badgeFor, watchInfo }: {
   link: StreamDto;
   candidates: StreamDto[];
   index: number;
@@ -596,11 +992,16 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
   /** v2 M3: manual re-extract of the current source (self-heal backup) */
   refreshing?: boolean;
   onRefresh?: () => void;
+  /** v2 M4: badge text for a candidate option ("": off or no probe data) */
+  badgeFor?: (c: StreamDto) => string;
+  /** v2 M4: "What am I watching?" drawer node (orElse null → hidden) */
+  watchInfo?: React.ReactNode;
 }) {
   const total = candidates.length;
   return (
-    <div className="player-controls small mono muted">
-      <span className="source-switch">
+    <>
+      <div className="player-controls small mono muted">
+        <span className="source-switch">
         {total > 1 && (
           <>
             <button
@@ -621,11 +1022,15 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
           aria-label="Video source"
           disabled={total < 2}
         >
-          {candidates.map((c, i) => (
-            <option key={`${i}-${c.url}`} value={String(i)}>
-              {i + 1}/{total} · {c.source} · {c.quality > 0 ? `${c.quality}p` : c.linkType}
-            </option>
-          ))}
+          {candidates.map((c, i) => {
+            const badge = badgeFor?.(c) ?? "";
+            return (
+              <option key={`${i}-${c.url}`} value={String(i)}>
+                {i + 1}/{total} · {c.source} · {c.quality > 0 ? `${c.quality}p` : c.linkType}
+                {badge ? ` · ${badge}` : ""}
+              </option>
+            );
+          })}
         </select>
         {total > 1 && (
           <>
@@ -666,7 +1071,9 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
           {downloadState ?? "⬇ download"}
         </button>
       </span>
-    </div>
+      </div>
+      {watchInfo != null && watchInfo}
+    </>
   );
 }
 
@@ -843,7 +1250,7 @@ function useKeyboardControls(
 }
 
 function HlsPlayer(props: SharedPlayerProps) {
-  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState, refreshing, onRefresh } = props;
+  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState, refreshing, onRefresh, badgeFor, watchdog, watchInfo } = props;
   const { videoRef, progressRef } = useProgressBinding(link, reportProgress, livePosRef);
   const [mutedLocal, setMutedLocal] = useState(muted);
   const setMutedBoth = useCallback((m: boolean) => {
@@ -906,13 +1313,15 @@ function HlsPlayer(props: SharedPlayerProps) {
         audio={<HlsAudioPicker hls={hlsInstance} />}
         refreshing={refreshing}
         onRefresh={onRefresh}
+        badgeFor={badgeFor}
+        watchInfo={watchInfo}
       />
     </div>
   );
 }
 
 function NativePlayer(props: SharedPlayerProps) {
-  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState, refreshing, onRefresh, audioPick, onAudioPick } = props;
+  const { link, candidates, onSourcePick, livePosRef, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState, refreshing, onRefresh, audioPick, onAudioPick, badgeFor, watchdog, watchInfo } = props;
   const { videoRef, progressRef } = useProgressBinding(link, reportProgress, livePosRef);
   const [mutedLocal, setMutedLocal] = useState(muted);
   const setMutedBoth = useCallback((m: boolean) => {
@@ -931,15 +1340,29 @@ function NativePlayer(props: SharedPlayerProps) {
    * server-side; &start carries the captured playhead so the switch is
    * seamless (the fresh timeline begins at the seek point, and the parent
    * pinned switchResume to 0 so no browser-side resume seek can stack on it).
+   * v2 M4: `cb` is the watchdog's cache-bust counter (0 = no param).
    */
+  const [cb, setCb] = useState(0);
+  useEffect(() => setCb(0), [link]); // watchdog state belongs to one source
+
   const streamSrc = useMemo(() => {
     let src = streamProxyUrl(link);
     if (audioPick) {
       src += `&audio=${audioPick.ord}`;
       if (audioPick.pos > 0) src += `&start=${audioPick.pos}`;
     }
+    if (cb > 0) src += `&cb=${cb}`;
     return src;
-  }, [link, audioPick]);
+  }, [link, audioPick, cb]);
+
+  // v2 M4: stall → one busted reload, then the self-heal/advance path
+  useBufferWatchdog(
+    videoRef,
+    watchdog === true,
+    streamSrc,
+    () => setCb((v) => v + 1),
+    onFail,
+  );
 
   return (
     <div className="player">
@@ -979,6 +1402,8 @@ function NativePlayer(props: SharedPlayerProps) {
         }
         refreshing={refreshing}
         onRefresh={onRefresh}
+        badgeFor={badgeFor}
+        watchInfo={watchInfo}
       />
     </div>
   );

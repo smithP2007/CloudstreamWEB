@@ -45,6 +45,7 @@ export async function getCapabilities(): Promise<Capabilities> {
 export type PlaybackSettings = {
   audioRemux: boolean;
   probeSources: boolean;
+  bufferWatchdog: boolean;
   liveTranscode: boolean;
   gpuAccel: "auto" | "on" | "off";
   convertAfterDownload: boolean;
@@ -270,6 +271,46 @@ export function playbackCandidates(links: StreamDto[]): StreamDto[] {
   return [...links]
     .filter((l) => /^https?:/i.test(l.url))
     .sort((a, b) => typeRank(b.linkType) - typeRank(a.linkType) || b.quality - a.quality);
+}
+
+// ---------- link decode truth (v2 M4) ------------------------------------------
+
+export type VideoProbe = {
+  codec: string | null;
+  profile: string | null;
+  width: number | null;
+  height: number | null;
+  bitDepth: number | null;
+  hdr: boolean;
+  fps: number | null;
+};
+
+export type LinkProbe = {
+  container: string | null;
+  formatName: string | null;
+  durationSec: number | null;
+  bitRate: number | null;
+  video: VideoProbe | null;
+  audio: AudioTrackDto[];
+  subtitlesCount: number | null;
+  streamed: boolean;
+};
+
+function probeUrl(link: Pick<StreamDto, "url" | "headers">): string {
+  return proxyUrl("/api/stream/probe", link.url, link.headers ?? {});
+}
+
+/**
+ * ffprobe decode-truth for a FILE link, fetched through the same engine path
+ * playback uses (probe truth == playback truth). null on any failure — the SPA
+ * then simply skips badges/ranking for the link. Server-cached per linkId.
+ */
+export async function getLinkProbe(link: Pick<StreamDto, "url" | "headers">): Promise<LinkProbe | null> {
+  try {
+    return await json<LinkProbe>(probeUrl(link));
+  } catch {
+    return null;
+  }
 }
 
 // ---------- library (Phase 4) ------------------------------------------------

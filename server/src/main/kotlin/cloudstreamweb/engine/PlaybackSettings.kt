@@ -5,7 +5,7 @@ import cloudstreamweb.persistence.Db
 import kotlinx.serialization.Serializable
 
 /**
- * M2 playback settings: the five user-facing toggles of the playback platform.
+ * M2 playback settings: the user-facing toggles of the playback platform.
  * Persisted in the existing `prefs` table under a `settings.*` key namespace
  * (plain scalar values — "true"/"false"/"auto" — no new schema, and the keys
  * never collide with plugin SharedPreferences because plugins never read them).
@@ -21,6 +21,7 @@ object PlaybackSettings {
     data class SettingsDto(
         val audioRemux: Boolean = true,          // M3: serve muxed files language-switched (mkv->mp4)
         val probeSources: Boolean = true,        // M4: ffprobe + MediaCapabilities truth pass
+        val bufferWatchdog: Boolean = true,      // M4: mid-play stall monitor (one reload, then next source)
         val liveTranscode: Boolean = false,      // M5: CPU/GPU transcode for undecodable streams
         val gpuAccel: String = "auto",           // M5: auto|on|off
         val convertAfterDownload: Boolean = false, // M5: transcode-once cache after a download
@@ -31,6 +32,7 @@ object PlaybackSettings {
     data class SettingsPatch(
         val audioRemux: Boolean? = null,
         val probeSources: Boolean? = null,
+        val bufferWatchdog: Boolean? = null,
         val liveTranscode: Boolean? = null,
         val gpuAccel: String? = null,
         val convertAfterDownload: Boolean? = null,
@@ -50,6 +52,7 @@ object PlaybackSettings {
         return SettingsDto(
             audioRemux = flag("audio_remux", true),
             probeSources = flag("probe_sources", true),
+            bufferWatchdog = flag("buffer_watchdog", true),
             liveTranscode = flag("live_transcode", false),
             gpuAccel = gpu,
             convertAfterDownload = flag("convert_after_download", false),
@@ -62,6 +65,7 @@ object PlaybackSettings {
         }
         if (patch.audioRemux != null) Db.savePref(PREFIX + "audio_remux", patch.audioRemux.toString())
         if (patch.probeSources != null) Db.savePref(PREFIX + "probe_sources", patch.probeSources.toString())
+        if (patch.bufferWatchdog != null) Db.savePref(PREFIX + "buffer_watchdog", patch.bufferWatchdog.toString())
         if (patch.liveTranscode != null) Db.savePref(PREFIX + "live_transcode", patch.liveTranscode.toString())
         if (patch.gpuAccel != null) Db.savePref(PREFIX + "gpu_accel", patch.gpuAccel)
         if (patch.convertAfterDownload != null) {
@@ -72,6 +76,13 @@ object PlaybackSettings {
 
     /** Test/dev helper: restore factory defaults (also what a fresh install reads). */
     fun resetToDefaults(): SettingsDto = update(
-        SettingsPatch(audioRemux = true, probeSources = true, liveTranscode = false, gpuAccel = "auto", convertAfterDownload = false),
+        SettingsPatch(
+            audioRemux = true,
+            probeSources = true,
+            bufferWatchdog = true,
+            liveTranscode = false,
+            gpuAccel = "auto",
+            convertAfterDownload = false,
+        ),
     )
 }

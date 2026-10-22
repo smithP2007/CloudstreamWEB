@@ -620,3 +620,25 @@ section h2 {
   padding: 7px 8px;
   vertical-align: top;
 }
+
+/* v2 M4: "What am I watching?" probe drawer (inside .player, below controls) */
+.watch-info {
+  margin: 4px 0 0;
+  font-size: 0.85rem;
+  color: var(--muted, inherit);
+}
+
+.watch-info summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.watch-info ul {
+  margin: 6px 0 0;
+  padding-left: 1.2rem;
+  line-height: 1.5;
+}
+
+.watch-info p {
+  margin: 6px 0 0;
+}

@@ -340,3 +340,50 @@ Verification:
       `audio=1&start=51` and playback resumes at the seek point (readyState 4).
 - Gate: `./gradlew test` 64 green / 0 fail (+1 environmental skip),
   `npm run build` green.
+
+## v2 — M4 gate: decode badges, playable-first ranking, watchdog, drawer (2026-10-22)
+
+Scope: per-link decode TRUTH (server ffprobe + browser MediaCapabilities),
+shown as badges; the source picker reranks playable-first; a stalled stream
+self-heals; the "What am I watching?" drawer exposes the truth in words.
+
+Server:
+- [x] `GET /api/stream/probe` — full ffprobe (`-show_streams -show_format`)
+      through the engine's own proxy (`raw=1`), cached per linkId
+      (`<id>.probe.json`, TTL 6h); returns container family, video face
+      (codec/profile/size/fps/bit-depth from pix_fmt/HDR from color_transfer),
+      audio streams, subtitle count, container bitrate. HLS → streamed:true.
+- [x] **runProbe rewritten**: stdout/stderr drained on daemon threads and the
+      process killed at the budget (45 s for link probes; audio probes keep
+      300 s because they gate the default remux). Found live: a wedged
+      ffprobe previously pinned the dispatcher thread forever (readText
+      before waitFor) and wedged ALL request processing — POSTs to any route
+      stopped completing until restart. Killing at the budget + threaded
+      drains removes the class of failure.
+- [x] `bufferWatchdog` toggle added to PlaybackSettings (default on) +
+      settings POST/GET + SettingsPage row (sixth toggle).
+SPA:
+- [x] api.ts `LinkProbe`/`VideoProbe` + `getLinkProbe` (catch → null → "no
+      data" is never conflated with "bad codec"); settings type + toggle.
+- [x] Player: probe hook (≤4 concurrent, current link first), badges in
+      source options (✓/△/✗ + resolution/codec/bit-depth/HDR face),
+      playable-first stable reranking applied once at a 25 s deadline
+      (stragglers can't hold the ranking hostage), index remapped by URL
+      identity so playback never jumps, and the "What am I watching?"
+      drawer (containers, codec face, audio languages, browser verdict).
+- [x] Buffer watchdog: armed post-playback-start, 10 s zero-growth → one
+      busted reload, 40 s → self-heal/advance path (same machinery as M3).
+Verification:
+- [x] RemuxTest +4 (full-probe parse: 10-bit/HDR/fps facts, mp4-family +
+      8-bit SDR, garbage → streamed, m3u8 short-circuit) and
+      RemuxIntegrationTest +2 (real probe through the proxy returns the
+      synthetic mkv's exact truth; cache file lands in the shared
+      namespace). Suite 70 tests / 0 failures (+1 environmental skip).
+- [x] LIVE (Hindmoviez + CineSimkl sources): probe endpoint returns real
+      truth (mkv · h264 High 1920×824 · aac · 83 min); badges appear in a
+      real browser (`✓ 1080p h264`, `✗ 4k hevc 10bit HDR`, `? no probe` on
+      the two 45s-killed dead mirrors — matches the log exactly); reranking
+      moved the ✓-file ahead of HLS/plain entries and `✗ hevc 10bit`
+      LAST; playback continues across the reorder (url identity pinned);
+      drawer shows honest states (probing… → probe failed / streaming);
+      the M3 muxed audio picker still lists hin/eng/kor on a playing file.

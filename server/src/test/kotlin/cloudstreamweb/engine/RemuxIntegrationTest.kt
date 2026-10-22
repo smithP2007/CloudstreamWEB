@@ -14,6 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeAll
@@ -249,5 +250,43 @@ class RemuxIntegrationTest {
         assertEquals(0x45, bytes[1].toInt() and 0xFF)
         assertEquals(0xDF, bytes[2].toInt() and 0xFF)
         assertEquals(0xA3, bytes[3].toInt() and 0xFF)
+    }
+
+    // ---- M4 full-link probe ------------------------------------------------------
+
+    @Test
+    fun `link probe returns container, video face and audio through the engine proxy`() {
+        val resp = get(proxied("/api/stream/probe"))
+        assertEquals(200, resp.code)
+        val p = Json.parseToJsonElement(resp.body!!.string()).jsonObject
+        assertFalse(p["streamed"]?.jsonPrimitive?.content == "true", "synthetic mkv is a FILE link")
+        assertEquals("mkv", p["container"]?.jsonPrimitive?.content)
+        assertEquals(2.0, p["durationSec"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: 0.0, 0.1)
+        val v = p["video"]?.jsonObject
+        assertEquals("h264", v?.get("codec")?.jsonPrimitive?.content)
+        // lavfi testsrc: 160x120 yuv420p 8-bit SDR @10fps
+        assertEquals(160, v?.get("width")?.jsonPrimitive?.content?.toInt())
+        assertEquals(120, v?.get("height")?.jsonPrimitive?.content?.toInt())
+        assertEquals(8, v?.get("bitDepth")?.jsonPrimitive?.content?.toInt())
+        assertEquals("false", v?.get("hdr")?.jsonPrimitive?.content)
+        val audio = p["audio"]?.jsonArray
+        assertEquals(2, audio?.size, "full probe must list both audio streams: ${p["audio"]}")
+        val langs = audio!!.map { it.jsonObject["lang"]?.jsonPrimitive?.content }.toSet()
+        assertEquals(setOf("hin", "eng"), langs)
+    }
+
+    @Test
+    fun `link probe caches under the shared linkId probe namespace`() {
+        // warm it
+        get(proxied("/api/stream/probe")).body!!.close()
+        val url = "http://127.0.0.1:$jdkPort$UPSTREAM_PATH"
+        val id = cloudstreamweb.engine.PlaybackEngine.linkId(url, emptyMap())
+        val cache = cloudstreamweb.RuntimeConfig.dataDir
+            .resolve("cache").resolve("probe").resolve("$id.probe.json")
+        assertTrue(Files.isRegularFile(cache), "expected probe cache at $cache")
+        // and a fresh request must still answer (from cache) with the same shape
+        val resp = get(proxied("/api/stream/probe"))
+        assertEquals(200, resp.code)
+        assertEquals("mkv", Json.parseToJsonElement(resp.body!!.string()).jsonObject["container"]?.jsonPrimitive?.content)
     }
 }

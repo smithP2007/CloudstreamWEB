@@ -57,6 +57,30 @@ object Remux {
 
     private const val PROBE_TTL_MS = 6L * 60 * 60 * 1000
 
+    /** Per-link decode truth for badges/ranking (M4): video codec-face + audio layout. */
+    @Serializable
+    data class VideoProbeDto(
+        val codec: String? = null,     // h264/hevc/vp9/av1/mpeg4/...
+        val profile: String? = null,   // High / Main / Baseline / ...
+        val width: Int? = null,
+        val height: Int? = null,
+        val bitDepth: Int? = null,     // 8/10/12 (parsed from pix_fmt)
+        val hdr: Boolean = false,      // PQ (HDR10) / HLG / bt2020 primaries
+        val fps: Double? = null,
+    )
+
+    @Serializable
+    data class LinkProbeDto(
+        val container: String? = null,   // coarse: mkv/webm/mp4/mpegts/...
+        val formatName: String? = null,  // raw ffprobe format_name
+        val durationSec: Double? = null,
+        val bitRate: Long? = null,       // container bitrate (MediaCapabilities smooth estimate)
+        val video: VideoProbeDto? = null,
+        val audio: List<AudioTrackDto> = emptyList(),
+        val subtitlesCount: Int? = null,
+        val streamed: Boolean = false,   // HLS or otherwise no direct file probed
+    )
+
     /**
      * Audio streams of a FILE link, probed through the engine proxy and cached
      * by linkId. Never throws for "bad content" — returns emptyList and lets
@@ -102,24 +126,151 @@ object Remux {
     fun cachedTracks(rawUrl: String, headers: Map<String, String>, linkId: String): List<AudioTrackDto> =
         probeAudio(rawUrl, headers, linkId)
 
+    private fun audioTrackOf(s: kotlinx.serialization.json.JsonObject, ordinal: Int): AudioTrackDto? {
+        val streamIndex = s["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: return null
+        val tags = s["tags"]?.jsonObject
+        val disp = s["disposition"]?.jsonObject
+        return AudioTrackDto(
+            ordinal = ordinal,
+            streamIndex = streamIndex,
+            lang = tags?.get("language")?.jsonPrimitive?.content,
+            title = tags?.get("title")?.jsonPrimitive?.content,
+            codec = s["codec_name"]?.jsonPrimitive?.content,
+            channels = s["channels"]?.jsonPrimitive?.content?.toIntOrNull(),
+            isDefault = disp?.get("default")?.jsonPrimitive?.content == "1",
+        )
+    }
+
     fun parseProbeJson(stdout: String): List<AudioTrackDto> {
         val streams = json.parseToJsonElement(stdout).jsonObject["streams"]?.jsonArray ?: return emptyList()
-        return streams.mapNotNull { el ->
-            val s = el.jsonObject
-            val tags = s["tags"]?.jsonObject
-            val disp = s["disposition"]?.jsonObject
-            s["index"]?.jsonPrimitive?.content?.toIntOrNull()?.let { streamIndex ->
-                AudioTrackDto(
-                    ordinal = 0, // replaced below by enumeration order
-                    streamIndex = streamIndex,
-                    lang = tags?.get("language")?.jsonPrimitive?.content,
-                    title = tags?.get("title")?.jsonPrimitive?.content,
-                    codec = s["codec_name"]?.jsonPrimitive?.content,
-                    channels = s["channels"]?.jsonPrimitive?.content?.toIntOrNull(),
-                    isDefault = disp?.get("default")?.jsonPrimitive?.content == "1",
-                )
+        return streams.mapIndexedNotNull { i, el -> audioTrackOf(el.jsonObject, i) }
+    }
+
+    // ---- M4 full-link probe ------------------------------------------------------
+
+    /**
+     * Everything a decode decision needs about a FILE link: container, the
+     * first video stream's codec-face, audio layout, subtitle count, duration.
+     * Same through-proxy truth as [probeAudio] (`raw=1` self-connection), cached
+     * per linkId in `<linkId>.probe.json` (TTL 6h). HLS links short-circuit to
+     * `streamed=true` — segment probing costs more latency than its badge is
+     * worth (m3u8 candidates are rarely the file-remux path anyway).
+     */
+    fun probeLink(rawUrl: String, headers: Map<String, String>, linkId: String): LinkProbeDto {
+        if (rawUrl.substringBefore('?').lowercase().endsWith(".m3u8")) {
+            return LinkProbeDto(streamed = true)
+        }
+
+        val tools = Capabilities.resolveTools()
+        val ffprobe = tools.ffprobe ?: throw ProviderException(
+            cloudstreamweb.errors.ErrorCodes.FFMPEG_MISSING,
+            "ffprobe is not installed (run scripts/bootstrap.sh or set CS_WEB_FFMPEG)",
+        )
+
+        val cache = probeDir.resolve("$linkId.probe.json")
+        if (Files.isRegularFile(cache) &&
+            System.currentTimeMillis() - Files.getLastModifiedTime(cache).toMillis() < PROBE_TTL_MS
+        ) {
+            runCatching { return parseLinkProbeJson(Files.readString(cache)) }
+            // unreadable cache: fall through, probe live, overwrite below
+        }
+
+        Files.createDirectories(probeDir)
+        val stdout = runProbe(
+            ffprobe,
+            listOf(
+                "-v", "error",
+                "-print_format", "json",
+                "-show_streams",
+                "-show_format",
+                selfProxyInput(rawUrl, headers),
+            ),
+            // badges must not wait minutes for a stuck hoster (audio probes —
+            // which gate the default remux — keep the full 300 s budget)
+            timeoutSeconds = 45,
+        ) ?: throw ProviderException(
+            cloudstreamweb.errors.ErrorCodes.PROBE_TIMEOUT,
+            "ffprobe failed for ${rawUrl.take(120)}",
+        )
+        return parseLinkProbeJson(stdout).also {
+            runCatching { Files.writeString(cache, stdout) }
+        }
+    }
+
+    /** Full-probe parse: video face + audio + subtitles + format. Tolerant by design. */
+    fun parseLinkProbeJson(stdout: String): LinkProbeDto {
+        val root = runCatching { json.parseToJsonElement(stdout).jsonObject }.getOrNull()
+            ?: return LinkProbeDto(streamed = true)
+        val format = root["format"]?.jsonObject
+        val streams = root["streams"]?.jsonArray ?: return LinkProbeDto(streamed = true)
+
+        var video: VideoProbeDto? = null
+        val audio = mutableListOf<AudioTrackDto>()
+        var subtitles = 0
+        for (el in streams) {
+            val s = runCatching { el.jsonObject }.getOrNull() ?: continue
+            when (s["codec_type"]?.jsonPrimitive?.content) {
+                "video" -> if (video == null) video = videoTrackOf(s)
+                "audio" -> audioTrackOf(s, audio.size)?.let { audio.add(it) }
+                "subtitle" -> subtitles++
             }
-        }.mapIndexed { i, t -> t.copy(ordinal = i) }
+        }
+        val rawFormatName = format?.get("format_name")?.jsonPrimitive?.content
+        return LinkProbeDto(
+            container = containerOf(rawFormatName),
+            formatName = rawFormatName,
+            durationSec = format?.get("duration")?.jsonPrimitive?.content?.toDoubleOrNull(),
+            bitRate = format?.get("bit_rate")?.jsonPrimitive?.content?.toLongOrNull(),
+            video = video,
+            audio = audio,
+            subtitlesCount = subtitles.takeIf { it > 0 },
+        )
+    }
+
+    private fun videoTrackOf(s: kotlinx.serialization.json.JsonObject): VideoProbeDto? {
+        val codec = s["codec_name"]?.jsonPrimitive?.content ?: return null
+        val pixFmt = s["pix_fmt"]?.jsonPrimitive?.content
+        val transfer = s["color_transfer"]?.jsonPrimitive?.content
+        val primaries = s["color_primaries"]?.jsonPrimitive?.content
+        return VideoProbeDto(
+            codec = codec,
+            profile = s["profile"]?.jsonPrimitive?.content,
+            width = s["width"]?.jsonPrimitive?.content?.toIntOrNull(),
+            height = s["height"]?.jsonPrimitive?.content?.toIntOrNull(),
+            bitDepth = when {
+                pixFmt == null -> null
+                pixFmt.contains("12") -> 12
+                pixFmt.contains("10") -> 10
+                pixFmt.contains("16") -> 16
+                else -> 8
+            },
+            hdr = transfer == "smpte2084" ||
+                transfer == "arib-std-b67" ||
+                primaries?.startsWith("bt2020") == true,
+            fps = s["avg_frame_rate"]?.jsonPrimitive?.content?.let(::rational),
+        )
+    }
+
+    /** "24000/1001" -> 23.976…, "30/1" -> 30.0, plain "30" -> 30.0. */
+    private fun rational(raw: String): Double? {
+        val parts = raw.split('/')
+        if (parts.size == 2) {
+            val num = parts[0].toDoubleOrNull() ?: return null
+            val den = parts[1].toDoubleOrNull() ?: return null
+            return if (den != 0.0) num / den else null
+        }
+        return raw.toDoubleOrNull()
+    }
+
+    /** Coarse container for badges: ffprobe's comma list -> one family name. */
+    private fun containerOf(formatName: String?): String? {
+        val first = formatName?.split(',')?.firstOrNull()?.trim()
+            .takeUnless { it.isNullOrEmpty() } ?: return null
+        return when (first) {
+            "matroska" -> "mkv"
+            "mov" -> "mp4" // mov,mp4,... family — browsers treat them alike
+            else -> first
+        }
     }
 
     // ---- ffmpeg command building ----------------------------------------------
@@ -188,18 +339,37 @@ object Remux {
     @Volatile
     var selfBaseUrlOverride: String? = null
 
-    private fun runProbe(bin: Path, args: List<String>): String? = runCatching {
+    private fun runProbe(bin: Path, args: List<String>, timeoutSeconds: Long = 300): String? = runCatching {
         val proc = ProcessBuilder(listOf(bin.toString()) + args)
             .redirectErrorStream(false)
             .start()
-        val out = proc.inputStream.bufferedReader().readText()
-        val err = proc.errorStream.bufferedReader().readText()
-        val ok = proc.waitFor(300, TimeUnit.SECONDS) && proc.exitValue() == 0
+        // stdout/stderr are drained on daemon workers — a process that never
+        // closes its pipes must not pin a dispatcher thread (this happened:
+        // ffprobe reading a wedged hoster kept readText() alive forever and
+        // starved request handling); the timeout below kills it regardless.
+        val outRef = java.util.concurrent.atomic.AtomicReference<ByteArray>()
+        val errRef = java.util.concurrent.atomic.AtomicReference<ByteArray>()
+        val outThread = Thread {
+            runCatching { outRef.set(proc.inputStream.use { it.readBytes() }) }
+        }.apply { isDaemon = true; start() }
+        val errThread = Thread {
+            runCatching { errRef.set(proc.errorStream.use { it.readBytes() }) }
+        }.apply { isDaemon = true; start() }
+
+        val ok = proc.waitFor(timeoutSeconds, TimeUnit.SECONDS) && proc.exitValue() == 0
         if (!ok) {
-            System.err.println("[remux-probe] exit=${if (proc.isAlive) "timeout" else proc.exitValue()} err=${err.take(300)}")
+            proc.destroyForcibly()
+            System.err.println("[remux-probe] no exit within ${timeoutSeconds}s — killed")
+            outThread.join(2_000)
+            errThread.join(2_000)
             return@runCatching null
         }
-        out.ifBlank { null }
+        // normal exit: the pipes hit EOF and the readers finish quickly
+        outThread.join(60_000)
+        errThread.join(1_000)
+        val err = errRef.get()?.decodeToString().orEmpty()
+        if (err.isNotBlank()) System.err.println("[remux-probe] exit=0 warn=${err.take(300)}")
+        (outRef.get() ?: ByteArray(0)).decodeToString().ifBlank { null }
     }.getOrNull()
 
     /** Human dump for offline re-probing (also used by local scripts). */
