@@ -563,6 +563,53 @@ section h2 {
   margin-right: 6px;
 }
 
+/* v2 M2: playback toggle rows (checkbox | stacked label + hint) */
+.toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.toggle-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.toggle-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  flex: none;
+  accent-color: #4a9eff;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.toggle-row > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.toggle-row .muted.small {
+  display: block;
+}
+
+.toggle-row select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font: inherit;
+  flex: none;
+}
+
 .settings-table {
   width: 100%;
   border-collapse: collapse;

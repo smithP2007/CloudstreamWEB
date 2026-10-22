@@ -15,6 +15,7 @@ data/
 
 # Tools vendored at bootstrap (see scripts/bootstrap.sh)
 plugin-runtime/tools/
+/tools/
 
 # IDE
 .idea/

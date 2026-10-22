@@ -23,6 +23,44 @@ export async function getProviders(): Promise<ProviderView[]> {
   return json<ProviderView[]>(`${API_BASE}/api/providers`);
 }
 
+/** Host capabilities (v2 M2) — what the server box can contribute to playback. */
+export type Capabilities = {
+  ffmpegAvailable: boolean;
+  ffmpegVersion: string | null;
+  ffmpegPath: string | null;
+  ffprobeAvailable: boolean;
+  ffprobeVersion: string | null;
+  ffprobePath: string | null;
+  gpuAccelerators: string[];
+  audioRemuxAvailable: boolean;
+  liveTranscodeAvailable: boolean;
+  decodeProbeAvailable: boolean;
+};
+
+export async function getCapabilities(): Promise<Capabilities> {
+  return json<Capabilities>(`${API_BASE}/api/capabilities`);
+}
+
+/** The five playback toggles (v2 M2). New playback features must be switchable here. */
+export type PlaybackSettings = {
+  audioRemux: boolean;
+  probeSources: boolean;
+  liveTranscode: boolean;
+  gpuAccel: "auto" | "on" | "off";
+  convertAfterDownload: boolean;
+};
+
+export async function getSettings(): Promise<PlaybackSettings> {
+  return json<PlaybackSettings>(`${API_BASE}/api/settings`);
+}
+
+export async function postSettings(patch: Partial<PlaybackSettings>): Promise<PlaybackSettings> {
+  return json<PlaybackSettings>(`${API_BASE}/api/settings`, {
+    method: "POST",
+    body: JSON.stringify(patch),
+  });
+}
+
 /** fetch + error contract shared by all API calls */
 export async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {

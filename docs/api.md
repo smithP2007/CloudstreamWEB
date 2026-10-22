@@ -109,3 +109,43 @@ recorded real-media fragments are NOT committed (public repo, upstream
 copyright). A local dev-only mkv fixture can be plugged in via system/
 environment property when decode-truth tests arrive (v2 M4).
 
+## Capabilities + settings (v2 M2)
+
+```
+GET  /api/capabilities → CapabilitiesDto
+GET  /api/settings     → SettingsDto
+POST /api/settings     → partial patch → FULL updated SettingsDto (400 REPO_INVALID on bad values)
+```
+
+`CapabilitiesDto` = host truth behind the SPA's grayed-out toggles:
+
+```json
+{
+  "ffmpegAvailable": true, "ffmpegVersion": "7.0.2-static", "ffmpegPath": "tools/ffmpeg/bin/ffmpeg",
+  "ffprobeAvailable": true, "ffprobeVersion": "7.0.2-static", "ffprobePath": "tools/ffmpeg/bin/ffprobe",
+  "gpuAccelerators": ["vaapi", "nvdec", "nvenc"],
+  "audioRemuxAvailable": true, "liveTranscodeAvailable": true, "decodeProbeAvailable": true
+}
+```
+
+ffmpeg/ffprobe resolution precedence: `CS_WEB_FFMPEG` env (binary or
+directory) → `tools/ffmpeg/bin/` (repo root; produced by `scripts/bootstrap.sh`
+and gitignored) → the same path under the data dir → `PATH`. Missing binaries
+never throw — the DTO just reports `false` and the SPA disables the dependent
+toggles.
+
+`SettingsDto` = the five playback toggles (every playback feature is
+switchable here; features read them per-request, no restart):
+
+| field | default | meaning |
+|---|---|---|
+| `audioRemux` | `true` | M3: language selector for muxed multi-audio files (remuxes MKV → MP4 with `-c copy`) |
+| `probeSources` | `true` | M4: ffprobe + browser MediaCapabilities truth pass behind the decode badges |
+| `liveTranscode` | `false` | M5: transcode undecodable streams while playing |
+| `gpuAccel` | `"auto"` | M5: `auto`/`on`/`off` hardware-acceleration mode |
+| `convertAfterDownload` | `false` | M5: transcode-once cache after each download |
+
+POST bodies may include any subset (`{"gpuAccel":"on"}`); `gpuAccel` outside
+`auto|on|off` → `400 {error:"REPO_INVALID"}` without persisting anything.
+
+

@@ -7,6 +7,7 @@ in `.gitignore`; each keeps its own upstream license):
 | --- | --- | --- | --- |
 | dex2jar v2.4 | [pxb1988/dex2jar](https://github.com/pxb1988/dex2jar) | Apache-2.0 | dex → JAR conversion with annotations intact (needed for `@JsonProperty`-driven providers when loading `.cs3`) |
 | enjarify | [Storyyeller/enjarify](https://github.com/Storyyeller/enjarify) | Apache-2.0 | fallback dex → JAR converter for cases dex2jar fails on |
+| ffmpeg/ffprobe (static) | [johnvansickle.com/ffmpeg](https://johnvansickle.com/ffmpeg/) | GPL-3.0 | audio-language remux, live transcoding of undecodable streams, source codec probing (v2 milestones M3–M5); optional — playback degrades gracefully without it |
 
 Runtime dependencies carry their own licenses and are pulled via Gradle/npm:
 Ktor & okhttp (Apache-2.0), SQLite JDBC, React (MIT), **hls.js** (Apache-2.0),

@@ -259,3 +259,36 @@ Scope: one server pipeline for everything that talks to provider links
       url/header sensitivity.
 - Gate: `./gradlew test --rerun-tasks` BUILD SUCCESSFUL — 50 tests green
   (offline; includes the M0 rig exercising the engine paths end-to-end).
+
+## v2 — M2 gate: capabilities + settings backbone (2026-10-22)
+
+Scope: host capability truth + the five user toggles every playback feature
+hangs off (user requirement: everything new is an on/off switch in Settings).
+
+- [x] `engine/Capabilities`: ffmpeg/ffprobe resolution precedence
+      (CS_WEB_FFMPEG env -> repo tools/ffmpeg/bin -> data-dir tools -> PATH;
+      static builds installed by scripts/bootstrap.sh, gitignored, GPL notice
+      in THIRD_PARTY_NOTICE.md). Short `-version` parsing, VAAPI via
+      /dev/dri render nodes, NVDEC/NVENC via nvidia-smi. Missing capabilities
+      degrade to `false` in the DTO — never throw.
+- [x] `GET /api/capabilities`: CapabilitiesDto incl. SPA conveniences
+      (audioRemuxAvailable = ffmpeg && ffprobe, liveTranscodeAvailable,
+      decodeProbeAvailable).
+- [x] `engine/PlaybackSettings`: five toggles (audioRemux/out-of-box ON,
+      probeSources ON, liveTranscode OFF, gpuAccel auto|on|off,
+      convertAfterDownload OFF), persisted in the existing `prefs` table
+      under a `settings.*` namespace; garbage values fall back per-field;
+      POST validation 400 REPO_INVALID + no-persist on bad gpuAccel.
+- [x] `GET/POST /api/settings` (SystemRoutes) wired into Application routing.
+- [x] SPA: api.ts `getCapabilities/getSettings/postSettings`; Settings page
+      "Playback backends" card with live status lines (ffmpeg version, ffprobe,
+      detected GPU) + five toggle rows, disabled+explained when the
+      capability is absent (user rule honored).
+- [x] ffmpeg 7.0.2-static + ffprobe installed locally via the new bootstrap
+      step; live smoke: capabilities shows vaapi, settings POST round-trip +
+      400 recoil verified through the running server; browser check of the
+      settings card.
+- [x] Tests: SystemRoutesTest (defaults, patch round-trip persistence,
+      invalid gpuAccel 400 recoil, capabilities shape) — settings namespace
+      reset around each test for determinism.
+- Gate: `./gradlew test` green; npm run build green.

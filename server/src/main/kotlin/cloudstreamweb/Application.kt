@@ -166,6 +166,7 @@ fun main() {
             cloudstreamweb.routes.StreamProxy.install(this)
             cloudstreamweb.routes.LibraryRoutes.install(this)
             cloudstreamweb.routes.DownloadsRoutes.install(this)
+            cloudstreamweb.routes.SystemRoutes.install(this)
 
             if (staticRoot != null) {
                 Spas.addSpaRouting(this, staticRoot)
