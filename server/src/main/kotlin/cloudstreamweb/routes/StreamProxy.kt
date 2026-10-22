@@ -3,11 +3,10 @@ package cloudstreamweb.routes
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.response.header
-import io.ktor.server.response.respondBytesWriter
+import io.ktor.server.response.respondOutputStream
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Routing
 import io.ktor.server.routing.get
-import io.ktor.utils.io.writeFully
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -67,28 +66,44 @@ object StreamProxy {
                 // ---- m3u8: rewrite every nested reference -----------------------
                 if (contentType.contains("mpegurl") || rawUrl.substringBefore('?').endsWith(".m3u8")) {
                     val text = resp.body?.string() ?: ""
+                    resp.close()
                     call.respondText(rewritePlaylist(text, resp.request.url.toString(), headersB64), ContentType.parse(contentType))
                 } else {
                     // ---- passthrough with range metadata --------------------------
-                    resp.header("Content-Length")?.let { call.response.header("Content-Length", it) }
                     resp.header("Content-Range")?.let { call.response.header("Content-Range", it) }
                     call.response.header("Accept-Ranges", resp.header("Accept-Ranges") ?: "bytes")
 
-                    val writer = call.respondBytesWriter(ContentType.parse(contentType)) {
-                        resp.body?.byteStream()?.use { input ->
-                            val buf = ByteArray(64 * 1024)
-                            while (true) {
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                writeFully(buf, 0, n)
-                                flush()
+                    // Ktor 3 drains streaming content AFTER the route handler returns:
+                    // the upstream okhttp body must be closed by the pump itself (the
+                    // block's finally), never by an outer finally — otherwise the
+                    // engine sees EOF immediately and the player receives 0 bytes.
+                    call.respondOutputStream(
+                        ContentType.parse(contentType),
+                        HttpStatusCode.fromValue(resp.code),
+                        resp.header("Content-Length")?.toLongOrNull(),
+                    ) {
+                        val out = this
+                        try {
+                            resp.body?.byteStream()?.use { input ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    out.write(buf, 0, n)
+                                }
+                                out.flush()
                             }
-                            flushAndClose()
+                        } finally {
+                            runCatching { resp.close() }
                         }
                     }
                 }
-            } finally {
-                resp.close()
+            } catch (t: Throwable) {
+                // Only the non-streaming paths can still be in flight here; the
+                // streaming block closes resp itself. A close() on an already-
+                // closed okhttp body is a no-op, so this is always safe.
+                runCatching { resp.close() }
+                throw t
             }
         }
 
@@ -126,9 +141,10 @@ object StreamProxy {
         }
     }
 
-    /** The exact header set we replay upstream (base64url-JSON "h" param). */
-    fun decodeHeaders(hB64: String?): Map<String, String> {
-        if (hB64.isNullOrBlank()) return emptyMap()
+    /**
+     * The exact header set we replay upstream (base64url-JSON "h" param).
+     */
+    fun decodeHeaders(hB64: String?): Map<String, String> {        if (hB64.isNullOrBlank()) return emptyMap()
         val text = String(java.util.Base64.getUrlDecoder().decode(hB64), StandardCharsets.UTF_8)
         return try {
             json.parseToJsonElement(text).jsonObject.entries

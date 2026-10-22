@@ -12,6 +12,7 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.path
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.routing
@@ -62,7 +63,7 @@ private fun Application.installLanTokenGuard(lanToken: String) {
             given.length == lanToken.length &&
             MessageDigest.isEqual(given.toByteArray(), lanToken.toByteArray())
         if (ok) return@intercept
-        call.respond(HttpStatusCode.Unauthorized, cloudstreamweb.routes.ErrorBody("UNAUTHORIZED", "missing or invalid token"))
+        call.respond(HttpStatusCode.Unauthorized, cloudstreamweb.routes.ErrorBody(cloudstreamweb.errors.ErrorCodes.UNAUTHORIZED, "missing or invalid token"))
         finish()
     }
 }
@@ -83,32 +84,45 @@ fun Application.installApiContract(lanToken: String? = RuntimeConfig.lanToken) {
         json(Json { ignoreUnknownKeys = true; encodeDefaults = true })
     }
 
+    // Request correlation id FIRST so the token guard's 401 carries it too:
+    // every response gets X-Req-Id, every [api-error] line references it.
+    intercept(ApplicationCallPipeline.Plugins) {
+        val reqId = cloudstreamweb.errors.ReqId.next()
+        call.attributes.put(cloudstreamweb.errors.ReqId.Key, reqId)
+        call.response.header("X-Req-Id", reqId)
+    }
+
     if (lanToken != null) {
         installLanTokenGuard(lanToken)
     }
 
-    // Typed error contract for the SPA + full stack traces in the server log
+    // Typed error contract for the SPA + greppable stderr lines. Codes and
+    // their statuses live in cloudstreamweb.errors.ErrorCodes (M0 taxonomy);
+    // classified (typed) failures log one compact line, unclassified ones
+    // additionally print the full stack.
     install(StatusPages) {
         exception<cloudstreamweb.routes.ProviderException> { call, cause ->
-            val status = when (cause.kind) {
-                "REPO_INVALID" -> HttpStatusCode.BadRequest
-                "PROVIDER_NOT_FOUND", "ENTRY_NOT_FOUND" -> HttpStatusCode.NotFound
-                else -> HttpStatusCode.BadGateway
-            }
+            val status = HttpStatusCode.fromValue(cloudstreamweb.errors.ErrorCodes.statusFor(cause.kind))
+            logApiError(call, "code=${cause.kind} msg=${cause.message?.take(240)}")
             call.respond(status, cloudstreamweb.routes.ErrorBody(cause.kind, cause.message))
         }
         exception<Throwable> { call, cause ->
-            System.err.println("[api-error] ${call.request.path()}")
+            logApiError(call, "code=INTERNAL msg=${(cause.message ?: cause.javaClass.simpleName).take(240)}")
             cause.printStackTrace()
             call.respond(
                 HttpStatusCode.InternalServerError,
                 cloudstreamweb.routes.ErrorBody(
-                    "INTERNAL",
+                    cloudstreamweb.errors.ErrorCodes.INTERNAL,
                     (cause.message ?: cause.javaClass.simpleName).take(300),
                 )
             )
         }
     }
+}
+
+private fun logApiError(call: io.ktor.server.application.ApplicationCall, detail: String) {
+    val reqId = call.attributes.getOrNull(cloudstreamweb.errors.ReqId.Key) ?: "-"
+    System.err.println("[api-error] req=$reqId path=${call.request.path()} $detail")
 }
 
 fun main() {

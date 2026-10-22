@@ -1,0 +1,31 @@
+name: tests
+
+# Offline-friendly unit tests (synthetic fixtures, no external network in the
+# test suite) run on every push and PR. The `upstream` submodule is required
+# because the build compiles against the CS3 library sources.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gradle-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Run unit tests
+        run: ./gradlew test --no-daemon

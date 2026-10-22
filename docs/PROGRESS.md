@@ -198,3 +198,38 @@
 - [x] hls instance lifted into state (`hlsInstance`) so the picker can enumerate
       and switch; Controls gained an `audio` slot next to the subtitle picker.
 - [x] `./gradlew test` BUILD SUCCESSFUL; `npm run build` clean
+
+## v2 "Playback Platform" — M0 gate (2026-10-22)
+
+Scope: safety net before any feature work.
+
+- [x] GitHub Actions CI (`.github/workflows/test.yml`): `./gradlew test` on
+      every push/PR, JDK 21, `upstream` submodule checkout, gradle caching.
+- [x] Error taxonomy: `cloudstreamweb.errors.ErrorCodes` — single source of
+      truth for code→status (shipped codes keep their SPA-visible statuses;
+      v2 playback codes pre-declared: UPSTREAM_403/URL_EXPIRED/PROBE_TIMEOUT/
+      CODEC_UNSUPPORTED/FFMPEG_MISSING/GPU_ACCEL_UNAVAILABLE; unknown fail
+      closed to 502). `ErrorTaxonomyTest` pins the table.
+- [x] Request ids: every `/api` response gets `X-Req-Id`; every `[api-error]`
+      log line prints `req=... path=... code=... msg=...` (typed failures log
+      one compact line, unclassified ones keep the full stack).
+- [x] Offline test rig: synthetic `master.m3u8` fixture + JDK-internal loopback
+      HTTP server in `StreamProxyRoutingTest` (rewritten manifests, Range
+      passthrough + metadata header copying, typed 502 bodies, VTT conversion,
+      400 recoil). Real-media fragments stay out of the public repo
+      (copyright); dev-only local fixture hook documented in docs/api.md.
+- [x] Manifest-rewriter fuzz: `PlaylistRewriteFuzzTest` — 400 seeded hostile
+      playlists with 6 invariants (line count, blank passthrough, proxied-ref
+      decode == resolved URL, URI-attr in-place swap, comment echo,
+      encode(decode(param)) round-trip) + real-world-shaped fixture test.
+- [x] FIRST production bug fixed by the rig: the proxy's `respondBytesWriter`
+      path wrote 0 bytes under the test engine and, per the live logs, died
+      with `ClassCastException: ChannelWriterContent → kotlin.Unit` on client
+      aborts. Runtime investigation (Ktor source) showed Ktor 3 drains
+      streaming content AFTER the route handler returns, so the handler's outer
+      `finally { resp.close() }` was closing the upstream body before drain —
+      and `respondBytesWriter`'s continuation mishandles aborts. Passthrough
+      now streams via `respondOutputStream` (JVM-native) with the upstream
+      body closed by the pump block + a rethrow-safety catch; Ktor bumped
+      3.5.0 → 3.6.0 (includes KTOR-8705 fix family).
+- Gate: `./gradlew test` BUILD SUCCESSFUL (26 tests green incl. the 12 new).

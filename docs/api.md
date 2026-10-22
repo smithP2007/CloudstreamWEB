@@ -80,3 +80,32 @@ Rows found RUNNING/QUEUED after a server restart are marked `PAUSED`
 byte offset when the CDN honours ranges.
 
 Error shape: `{error: "HASH_MISMATCH" | "ENTRY_NOT_FOUND" | "REPO_PARSE_FAILED" | ... , detail?}`
+
+## Error codes + request ids (v2 M0)
+
+Every failure response is `{error: <code>, detail?}`; every `/api` response
+carries an `X-Req-Id` header (8 hex chars) and the server logs the same id on
+each `[api-error]` line (`[api-error] req=<id> path=<path> code=<code>
+msg=...`), so a browser failure maps 1:1 onto the server log. The code ->
+HTTP-status mapping is central in `server/src/main/kotlin/cloudstreamweb/errors/ErrorCodes.kt`;
+unknown codes fail closed to 502.
+
+| code | status | meaning |
+|---|---|---|
+| `UNAUTHORIZED` | 401 | LAN token missing/invalid |
+| `REPO_INVALID` | 400 | malformed request (missing url, bad header blob, ...) |
+| `PROVIDER_NOT_FOUND` / `ENTRY_NOT_FOUND` | 404 | no such provider / library entry |
+| `PROVIDER_ERROR` | 502 | extension or upstream extraction failure (incl. hoster 4xx) |
+| `UPSTREAM_403` | 502 | hoster refuses this request right now (v2 M3+) |
+| `URL_EXPIRED` | 410 | signed link past its TTL; SPA re-extracts and retries |
+| `PROBE_TIMEOUT` | 504 | candidate probe gave up (v2 M4+) |
+| `CODEC_UNSUPPORTED` | 422 | stream the browser cannot decode (v2 M4+) |
+| `FFMPEG_MISSING` / `GPU_ACCEL_UNAVAILABLE` | 501 | remux/transcode requested but capability absent (v2 M3+/M5) |
+| internal failures | 500 | unclassified throwable, full stack in the server log |
+
+Fixture policy for the offline test rig: synthetic text fixtures (playlists,
+subtitles) are committed under `server/src/test/resources/fixtures/`;
+recorded real-media fragments are NOT committed (public repo, upstream
+copyright). A local dev-only mkv fixture can be plugged in via system/
+environment property when decode-truth tests arrive (v2 M4).
+

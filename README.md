@@ -1,5 +1,7 @@
 # CloudStream Web
 
+![tests](https://github.com/smithP2007/CloudstreamWEB/actions/workflows/tests.yml/badge.svg)
+
 **Run real [CloudStream](https://github.com/recloudstream/cloudstream) extensions on your own machine, in your browser.**
 
 A self-hosted PC/web port of the Android app: a JVM backend that installs actual
