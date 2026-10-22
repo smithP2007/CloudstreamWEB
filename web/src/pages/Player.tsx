@@ -272,7 +272,133 @@ function SubtitlePicker({
   );
 }
 
-function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles }: {
+type HlsAudioTrackLike = { id?: number; name?: string; lang?: string };
+
+/**
+ * Audio-track selector for HLS sources. hls.js lists every rendered audio
+ * rendition (EXT-X-MEDIA groups); switching sets hls.audioTrack, and the
+ * proxy already rewrites rendition playlists like any other manifest URL.
+ * Hidden unless the stream actually offers more than one audio track.
+ */
+function HlsAudioPicker({ hls }: { hls: Hls | null }) {
+  const [tracks, setTracks] = useState<HlsAudioTrackLike[] | null>(null);
+  const [current, setCurrent] = useState(-1);
+
+  useEffect(() => {
+    if (!hls) {
+      setTracks(null);
+      setCurrent(-1);
+      return;
+    }
+    const read = () => {
+      const list = (hls.audioTracks ?? []) as unknown as HlsAudioTrackLike[];
+      if (list.length > 1) {
+        setTracks(list);
+        setCurrent(hls.audioTrack);
+      } else {
+        setTracks(null);
+        setCurrent(-1);
+      }
+    };
+    read();
+    // tracks arrive when the manifest is parsed; SWITCHED keeps the select honest
+    hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, read);
+    hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, read);
+    return () => {
+      hls.off(Hls.Events.AUDIO_TRACKS_UPDATED, read);
+      hls.off(Hls.Events.AUDIO_TRACK_SWITCHED, read);
+    };
+  }, [hls]);
+
+  if (!hls || !tracks || tracks.length < 2) return null;
+
+  return (
+    <select
+      className="aud-pick"
+      value={String(current)}
+      onChange={(e) => {
+        const i = Number(e.target.value);
+        hls.audioTrack = i;
+        setCurrent(i);
+      }}
+      title="Audio track"
+      aria-label="Audio track"
+    >
+      {tracks.map((t, i) => (
+        <option key={String(i)} value={String(i)}>
+          {t.name || t.lang || `audio ${i + 1}`}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * Audio-track selector for direct (native <video>) sources, where the tracks
+ * live on the media element. Chromium/Safari expose `audioTracks` for some
+ * containers; browsers that don't simply never show this picker, so it's a
+ * pure progressive enhancement.
+ */
+function NativeAudioPicker({
+  videoRef,
+  link,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  link: StreamDto;
+}) {
+  type NativeAudioTrack = { label?: string; language?: string; enabled: boolean };
+  type NativeAudioTrackList = { length: number; [i: number]: NativeAudioTrack };
+  const [tracks, setTracks] = useState<NativeAudioTrack[] | null>(null);
+  const [current, setCurrent] = useState(0);
+
+  useEffect(() => {
+    setTracks(null);
+    setCurrent(0);
+    let ticks = 0;
+    const id = window.setInterval(() => {
+      const at = (
+        videoRef.current as unknown as { audioTracks?: NativeAudioTrackList } | null
+      )?.audioTracks;
+      const list = at ? Array.from(at) : null;
+      if (list && list.length > 1) {
+        setTracks(list);
+        const enabled = list.findIndex((t) => t.enabled);
+        setCurrent(Math.max(0, enabled));
+        window.clearInterval(id);
+      }
+      if (++ticks > 120) window.clearInterval(id); // ~1 min: tracks appear after metadata
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [videoRef, link]); // link: reset for each switched source
+
+  if (!tracks || tracks.length < 2) return null;
+
+  const apply = (i: number) => {
+    const at = (
+      videoRef.current as unknown as { audioTracks?: NativeAudioTrackList } | null
+    )?.audioTracks;
+    if (at) Array.from(at).forEach((t, j) => { t.enabled = j === i; });
+    setCurrent(i);
+  };
+
+  return (
+    <select
+      className="aud-pick"
+      value={String(current)}
+      onChange={(e) => apply(Number(e.target.value))}
+      title="Audio track"
+      aria-label="Audio track"
+    >
+      {tracks.map((t, i) => (
+        <option key={String(i)} value={String(i)}>
+          {t.label || t.language || `audio ${i + 1}`}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, onDownload, downloadState, videoRef, subtitles, audio }: {
   link: StreamDto;
   candidates: StreamDto[];
   index: number;
@@ -283,6 +409,8 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
   downloadState: string | null;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   subtitles?: SubtitleDto[];
+  /** player-specific audio picker (<HlsAudioPicker>/<NativeAudioPicker>) */
+  audio?: React.ReactNode;
 }) {
   const total = candidates.length;
   return (
@@ -329,6 +457,11 @@ function Controls({ link, candidates, index, onSourcePick, muted, toggleMute, on
         )}
       </span>
       <span>
+        {audio ? (
+          <>
+            {audio}{" "}
+          </>
+        ) : null}
         <SubtitlePicker videoRef={videoRef} subtitles={subtitles} />{" "}
         <button onClick={toggleMute}>{muted ? "unmute" : "mute"}</button>{" "}
         <button onClick={onDownload} disabled={downloadState === "queueing…"}>
@@ -521,6 +654,9 @@ function HlsPlayer(props: SharedPlayerProps) {
   }, [setMuted]);
   useKeyboardControls(videoRef, setMutedBoth);
 
+  // instance lifted into state so the audio picker can enumerate/switch tracks
+  const [hlsInstance, setHlsInstance] = useState<Hls | null>(null);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -529,6 +665,7 @@ function HlsPlayer(props: SharedPlayerProps) {
       // the proxy rewrites every segment URL already; keep in-buffer behavior default
       enableWorker: true,
     });
+    setHlsInstance(hls);
     hls.loadSource(streamProxyUrl(link));
     hls.attachMedia(video);
     hls.on(Hls.Events.ERROR, (_e, data) => {
@@ -538,7 +675,10 @@ function HlsPlayer(props: SharedPlayerProps) {
       }
     });
 
-    return () => hls.destroy();
+    return () => {
+      setHlsInstance(null);
+      hls.destroy();
+    };
   }, [videoRef, link, onFail]);
 
   // resume position may arrive before or after bind — feed it to the controller
@@ -565,6 +705,7 @@ function HlsPlayer(props: SharedPlayerProps) {
         downloadState={downloadState}
         videoRef={videoRef}
         subtitles={subtitles}
+        audio={<HlsAudioPicker hls={hlsInstance} />}
       />
     </div>
   );
@@ -613,6 +754,7 @@ function NativePlayer(props: SharedPlayerProps) {
         downloadState={downloadState}
         videoRef={videoRef}
         subtitles={subtitles}
+        audio={<NativeAudioPicker videoRef={videoRef} link={link} />}
       />
     </div>
   );

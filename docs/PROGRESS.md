@@ -178,3 +178,23 @@
       15/209 Voe 584p continuing at ~same timestamp, still playing, history
       row advancing (749/6678); ◀/▶ button path also verified (15→16).
 - [x] `./gradlew test` BUILD SUCCESSFUL
+
+## Audio-track selection (user-reported gap: default audio only)
+- [x] HLS audio picker: `HlsAudioPicker` reads hls.js `audioTracks` (EXT-X-MEDIA
+      renditions) once the manifest parses, hides itself when <2 tracks, and
+      switching sets `hls.audioTrack`; AUDIO_TRACKS_UPDATED / AUDIO_TRACK_SWITCHED
+      keep the select honest. Scan of the CineStream episode found real dual-audio
+      playlists (VidHidePro #87, Voe #100/#104: हिन्दी hi + English en).
+      Browser-verified: source switch to VidHidePro 400p → picker showed
+      ["हिन्दी","English"]; default was हिन्दी (the user's complaint), switched to
+      English (hls confirmed the rendition switch via AUDIO_TRACK_SWITCHED; buffer
+      kept growing), round-tripped back to हिन्दी, playback uninterrupted (31.8s →
+      99.9s → 123.4s across switches). Picker hidden on single-audio VaPlayer ✓
+- [x] Native (direct VIDEO/FILE) audio picker: `NativeAudioPicker` drives the media
+      element's `audioTracks` (label/language, enabled) where the browser exposes
+      it — progressive enhancement only: Chromium does not implement
+      HTMLMediaElement.audioTracks, so Safari/WebKit users get audible language
+      choice on direct mkv/mp4, Chromium users need the HLS variants above.
+- [x] hls instance lifted into state (`hlsInstance`) so the picker can enumerate
+      and switch; Controls gained an `audio` slot next to the subtitle picker.
+- [x] `./gradlew test` BUILD SUCCESSFUL; `npm run build` clean

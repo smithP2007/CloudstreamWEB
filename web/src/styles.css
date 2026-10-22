@@ -514,10 +514,9 @@ section h2 {
   font: inherit;
 }
 
-/* ---------- player subtitle/source pickers + keys hint ---------------------- */
+/* ---------- player pickers (source/subtitle/audio) + keys hint --------------- */
 
-.player-controls select.sub-pick,
-.player-controls select.src-pick {
+.player-controls select {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--border);
@@ -528,10 +527,8 @@ section h2 {
   max-width: 46vw;
 }
 
-.player-controls select.sub-pick:hover,
-.player-controls select.src-pick:hover,
-.player-controls select.sub-pick:focus,
-.player-controls select.src-pick:focus {
+.player-controls select:hover,
+.player-controls select:focus {
   border-color: var(--accent);
 }
 
