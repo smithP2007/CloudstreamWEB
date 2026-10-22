@@ -1,5 +1,7 @@
 package cloudstreamweb.routes
 
+import cloudstreamweb.errors.ErrorBody
+import cloudstreamweb.errors.ProviderException
 import cloudstreamweb.persistence.Db
 import cloudstreamweb.plugins.ExtensionRuntime
 import io.ktor.http.HttpStatusCode

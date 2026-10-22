@@ -63,7 +63,7 @@ private fun Application.installLanTokenGuard(lanToken: String) {
             given.length == lanToken.length &&
             MessageDigest.isEqual(given.toByteArray(), lanToken.toByteArray())
         if (ok) return@intercept
-        call.respond(HttpStatusCode.Unauthorized, cloudstreamweb.routes.ErrorBody(cloudstreamweb.errors.ErrorCodes.UNAUTHORIZED, "missing or invalid token"))
+        call.respond(HttpStatusCode.Unauthorized, cloudstreamweb.errors.ErrorBody(cloudstreamweb.errors.ErrorCodes.UNAUTHORIZED, "missing or invalid token"))
         finish()
     }
 }
@@ -101,17 +101,17 @@ fun Application.installApiContract(lanToken: String? = RuntimeConfig.lanToken) {
     // classified (typed) failures log one compact line, unclassified ones
     // additionally print the full stack.
     install(StatusPages) {
-        exception<cloudstreamweb.routes.ProviderException> { call, cause ->
+        exception<cloudstreamweb.errors.ProviderException> { call, cause ->
             val status = HttpStatusCode.fromValue(cloudstreamweb.errors.ErrorCodes.statusFor(cause.kind))
             logApiError(call, "code=${cause.kind} msg=${cause.message?.take(240)}")
-            call.respond(status, cloudstreamweb.routes.ErrorBody(cause.kind, cause.message))
+            call.respond(status, cloudstreamweb.errors.ErrorBody(cause.kind, cause.message))
         }
         exception<Throwable> { call, cause ->
             logApiError(call, "code=INTERNAL msg=${(cause.message ?: cause.javaClass.simpleName).take(240)}")
             cause.printStackTrace()
             call.respond(
                 HttpStatusCode.InternalServerError,
-                cloudstreamweb.routes.ErrorBody(
+                cloudstreamweb.errors.ErrorBody(
                     cloudstreamweb.errors.ErrorCodes.INTERNAL,
                     (cause.message ?: cause.javaClass.simpleName).take(300),
                 )

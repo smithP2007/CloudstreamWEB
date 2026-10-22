@@ -233,3 +233,29 @@ Scope: safety net before any feature work.
       body closed by the pump block + a rethrow-safety catch; Ktor bumped
       3.5.0 → 3.6.0 (includes KTOR-8705 fix family).
 - Gate: `./gradlew test` BUILD SUCCESSFUL (26 tests green incl. the 12 new).
+
+## v2 — M1 gate: unified PlaybackEngine (2026-10-22)
+
+Scope: one server pipeline for everything that talks to provider links
+(DTO/REST contract untouched — SPA unaffected).
+
+- [x] `cloudstreamweb.engine.PlaybackEngine`: the single OkHttp client
+      (shared by proxy + downloads), header replay + Range forward +
+      Accept-Encoding identity, the streaming passthrough pump,
+      manifest-rewrite logic (moved), proxy-ref URL builders, and `linkId`
+      = sha256(url+sorted headers)/16 — the cache-key namespace probe/remux/
+      ffprobe caches will use in M2+ (all in the existing `cache/` dir;
+      no SQLite schema churn).
+- [x] `Passthrough` became a top-level engine extension with the
+      after-handler-drain ownership baked in (the M0 bug class stays dead:
+      an outer finally can no longer close the upstream body early).
+- [x] `ProviderException`/`ErrorBody` moved to `cloudstreamweb.errors` next
+      to the `ErrorCodes` registry; routes + engine reference the one home.
+- [x] `/api/stream` + `/api/subtitle` are thin adapters over the engine;
+      DownloadManager now reuses the engine's shared client and
+      `buildUpstream(..., head = true)` for its total-length HEAD probe
+      (removed its own duplicate builder/client).
+- [x] `LinkIdTest` pins id stability, header-order independence and
+      url/header sensitivity.
+- Gate: `./gradlew test --rerun-tasks` BUILD SUCCESSFUL — 50 tests green
+  (offline; includes the M0 rig exercising the engine paths end-to-end).

@@ -30,11 +30,9 @@ object DownloadManager {
     private val sem = Semaphore(CONCURRENCY)
     private val json = kotlinx.serialization.json.Json
 
-    private val client = okhttp3.OkHttpClient.Builder()
-        .connectTimeout(java.time.Duration.ofSeconds(20))
-        .readTimeout(java.time.Duration.ofMinutes(2))
-        .followRedirects(true)
-        .build()
+    // M1: the engine owns the client and upstream request shape; the download
+    // adapter keeps its own file/resume semantics around them.
+    private val client = cloudstreamweb.engine.PlaybackEngine.sharedClient()
 
     fun enqueue(
         provider: String?,
@@ -112,21 +110,19 @@ object DownloadManager {
         val existing = Db.getDownload(id)
         val resumeFrom = existing?.downloadedBytes ?: 0L
 
-        val builder = okhttp3.Request.Builder().url(linkUrl)
-        headers.forEach { (k, v) -> builder.header(k, v) }
-        builder.header("Accept-Encoding", "identity")
-        if (resumeFrom > 0) builder.header("Range", "bytes=$resumeFrom-")
+        val upstreamRequest = cloudstreamweb.engine.PlaybackEngine.buildUpstream(
+            linkUrl,
+            headers,
+            range = if (resumeFrom > 0) "bytes=$resumeFrom-" else null,
+        )
 
         // Some CDNs stream chunked so the first GET has no length; a cheap HEAD
         // probe fills totalBytes so the UI can show real percentages. Best-effort.
         if (existing?.totalBytes == null) {
             runCatching {
-                val head = okhttp3.Request.Builder().url(linkUrl)
-                    .headers(okhttp3.Headers.Builder().also { hb -> headers.forEach { (k, v) -> hb.add(k, v) } }.build())
-                    .header("Accept-Encoding", "identity")
-                    .head()
-                    .build()
-                client.newCall(head).execute().use { r ->
+                client.newCall(
+                    cloudstreamweb.engine.PlaybackEngine.buildUpstream(linkUrl, headers, head = true),
+                ).execute().use { r ->
                     val len = r.header("Content-Length")?.toLongOrNull()
                     if (r.isSuccessful && len != null && len > 0) Db.setDownloadTotal(id, len)
                 }
@@ -137,7 +133,7 @@ object DownloadManager {
         Db.setDownloadProgress(id, resumeFrom, "RUNNING", null)
 
         val resp = try {
-            client.newCall(builder.build()).execute()
+            client.newCall(upstreamRequest).execute()
         } catch (t: Throwable) {
             Db.setDownloadFailed(id, target.toString(), resumeFrom, "connect: ${t.message?.take(160)}")
             return@withContext

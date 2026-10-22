@@ -1,5 +1,7 @@
 package cloudstreamweb.routes
 
+import cloudstreamweb.errors.ErrorBody
+import cloudstreamweb.errors.ProviderException
 import com.lagradost.cloudstream3.APIHolder
 import com.lagradost.cloudstream3.AnimeLoadResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -90,9 +92,6 @@ data class SubtitleDto(
     val url: String,
     val headers: Map<String, String> = emptyMap(),
 )
-
-// provider errors surface to the SPA as typed errors
-class ProviderException(val kind: String, message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 // ---------- helpers -----------------------------------------------------------
 

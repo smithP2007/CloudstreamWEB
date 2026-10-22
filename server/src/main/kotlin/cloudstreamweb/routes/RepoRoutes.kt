@@ -1,5 +1,7 @@
 package cloudstreamweb.routes
 
+import cloudstreamweb.errors.ErrorBody
+import cloudstreamweb.errors.ProviderException
 import cloudstreamweb.catalog.CatalogEntry
 import cloudstreamweb.catalog.RepoEntry
 import cloudstreamweb.catalog.RepoFetcher
@@ -41,7 +43,6 @@ data class PluginView(
     val loadState: String = "NONE",
 )
 
-@Serializable
 data class ErrorBody(val error: String, val detail: String? = null)
 
 /**

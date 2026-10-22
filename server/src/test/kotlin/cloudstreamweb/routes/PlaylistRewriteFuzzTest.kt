@@ -9,6 +9,7 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Random
+import cloudstreamweb.engine.PlaybackEngine
 
 /**
  * v2 M0: the m3u8 playlist rewriter is pure text logic — property-test it
@@ -88,7 +89,7 @@ class PlaylistRewriteFuzzTest {
             val base = pick(bases, rnd)
             val gen = Gen(rnd)
             val text = (1..rnd.nextInt(12) + 1).joinToString("\n") { gen.line() }
-            val out = StreamProxy.rewritePlaylist(text, base, "")
+            val out = PlaybackEngine.rewritePlaylist(text, base, "")
             val ins = text.lines()
             val outs = out.lines()
             assertEquals(ins.size, outs.size, "[$iter] line count must not change\ntext=$text\nout=$out")
@@ -153,7 +154,7 @@ class PlaylistRewriteFuzzTest {
         val text = javaClass.getResourceAsStream("/fixtures/master.m3u8")!!
             .readBytes().toString(StandardCharsets.UTF_8)
         val base = "http://cdn.example.com/master.m3u8"
-        val out = StreamProxy.rewritePlaylist(text, base, "")
+        val out = PlaybackEngine.rewritePlaylist(text, base, "")
 
         // audio rendition (relative), absolute audio URI, i-frame, key + 2 variants
         assertEquals(6, out.split("\n").count { it.contains("/api/stream?url=") })
