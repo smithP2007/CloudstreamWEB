@@ -129,6 +129,14 @@ class DbLibraryTest {
         current = required(Db.getDownload(row.id), "download row")
         assertEquals("DONE", current.state)
         assertEquals(4000L, current.totalBytes)
+        Db.setDownloadTotal(row.id, 4000L)
+        current = required(Db.getDownload(row.id), "download row")
+        assertEquals(4000L, current.totalBytes)
+        // second probe attempt must not overwrite a known total
+        Db.setDownloadTotal(row.id, 9999L)
+        current = required(Db.getDownload(row.id), "download row")
+        assertEquals(4000L, current.totalBytes)
+
         assertFalse(Db.listStaleRunning().any { it.id == row.id })
 
         // failure path preserves recorded bytes + detail

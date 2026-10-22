@@ -513,3 +513,62 @@ section h2 {
   padding: 8px 12px;
   font: inherit;
 }
+
+/* ---------- player subtitle picker + keys hint ------------------------------ */
+
+.sub-pick {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sub-pick:hover,
+.sub-pick:focus {
+  border-color: var(--accent);
+}
+
+/* ---------- settings page ---------------------------------------------------- */
+
+.settings-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.settings-cards .card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.settings-cards h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.settings-cards input {
+  background: var(--bg, #111);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  margin-right: 6px;
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.settings-table td {
+  border-top: 1px solid var(--border);
+  padding: 7px 8px;
+  vertical-align: top;
+}

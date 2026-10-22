@@ -117,6 +117,22 @@ object DownloadManager {
         builder.header("Accept-Encoding", "identity")
         if (resumeFrom > 0) builder.header("Range", "bytes=$resumeFrom-")
 
+        // Some CDNs stream chunked so the first GET has no length; a cheap HEAD
+        // probe fills totalBytes so the UI can show real percentages. Best-effort.
+        if (existing?.totalBytes == null) {
+            runCatching {
+                val head = okhttp3.Request.Builder().url(linkUrl)
+                    .headers(okhttp3.Headers.Builder().also { hb -> headers.forEach { (k, v) -> hb.add(k, v) } }.build())
+                    .header("Accept-Encoding", "identity")
+                    .head()
+                    .build()
+                client.newCall(head).execute().use { r ->
+                    val len = r.header("Content-Length")?.toLongOrNull()
+                    if (r.isSuccessful && len != null && len > 0) Db.setDownloadTotal(id, len)
+                }
+            }
+        }
+
         val target = dir.resolve(fileName(name, provider, linkUrl, contentTypeGuess = null))
         Db.setDownloadProgress(id, resumeFrom, "RUNNING", null)
 

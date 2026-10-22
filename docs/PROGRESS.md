@@ -147,3 +147,23 @@
       unchanged (Invidious search 0 items, Moviesmod links=0, TopMovies/Vega home dead;
       CineSimkl/CineTmdb stream extract 502 upstream)
 - [x] `./gradlew test` BUILD SUCCESSFUL (incl. new LanTokenAuthTest, prefs roundtrip)
+
+## Post-plan polish (after Gate 5)
+- [x] Player subtitle picker: shared SubtitlePicker in Controls ("subs off" + one
+      option per track); modes applied immediately, and a 2-min restoration poll re-applies
+      after hls.js re-attaches media (textTrack modes reset on source change — observed
+      live). Browser-verified on CineStream "Love of Your Life" (35 tracks): selecting
+      English shows 1681 converted WebVTT cues ("So, um, you made this?"), subs off clears;
+      also verified with the synthetic-change lesson: dispatchEvent('change') needs
+      bubbles: true to reach React's root listener (test only; real picks unaffected)
+- [x] Player keyboard shortcuts (useKeyboardControls): space play/pause, arrows ±5s,
+      PageUp/Down ±30s, m mute, f fullscreen; ignored while typing in inputs.
+      Verified live (+5s, −30s, pause toggle)
+- [x] Download size probe: HEAD request on first run fills total_bytes for chunked CDNs,
+      guarded "AND total_bytes IS NULL" so real Content-Range totals win; Downloads UI now
+      shows true percentages (r2 chunked 2500986645 B verified RUNNING)
+- [x] Settings page replaces the placeholder: backend card (version/upstream API),
+      LAN-token card (stored status, set/clear), library card with live counts + danger
+      actions (clear all history / discard all downloads with confirm), providers table
+      (name, plugin, tvTypes, hasMainPage) — rendered with 14 live providers
+- [x] `./gradlew test` BUILD SUCCESSFUL (setDownloadTotal once-only covered)

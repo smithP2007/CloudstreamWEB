@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Hls from "hls.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";import Hls from "hls.js";
 import type { StreamDto, SubtitleDto } from "../lib/api";
 import { createDownload, playbackCandidates, saveHistory, streamProxyUrl, subtitleProxyUrl } from "../lib/api";
 import { toastError } from "../lib/toast";
@@ -168,7 +167,76 @@ function SubtitleTracks({ subtitles }: { subtitles?: SubtitleDto[] }) {
   );
 }
 
-function Controls({ link, index, total, muted, toggleMute, onDownload, downloadState }: {
+/**
+ * Our own subtitle selector (the browser's native CC menu is fine, but
+ * invisible on a video without a menu bar). Selecting applies textTrack
+ * modes immediately. hls.js/media-source attaches rebuild the track list
+ * with default modes, so a poll re-applies the user's pick until the
+ * media settles (~2 min window).
+ */
+function SubtitlePicker({
+  videoRef,
+  subtitles,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  subtitles?: SubtitleDto[];
+}) {
+  const [selected, setSelected] = useState("off");
+  const count = subtitles?.length ?? 0;
+
+  const apply = useCallback((option: string) => {
+    const v = videoRef.current;
+    const tracks = v ? Array.from(v.textTracks) : [];
+    tracks.forEach((t, i) => {
+      t.mode = String(i) === option ? "showing" : "disabled";
+    });
+    setSelected(option);
+  }, [videoRef]);
+
+  useEffect(() => {
+    setSelected("off");
+  }, [count]);
+
+  /** the picker UI only mirrors state; tracks are applied on change + restore */
+  const onPick = (e: React.ChangeEvent<HTMLSelectElement>) => apply(e.target.value);
+
+  /** Keep the user's choice after hls.js re-attaches media (modes reset). */
+  useEffect(() => {
+    if (selected === "off" || !count) return;
+    let ticks = 0;
+    const id = window.setInterval(() => {
+      const v = videoRef.current;
+      if (!v || v.textTracks.length === 0) return;
+      const track = v.textTracks[Number(selected)];
+      if (track && track.mode !== "showing") {
+        track.mode = "showing";
+      }
+      if (++ticks > 240) window.clearInterval(id); // ~2 min settle window
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [selected, count, videoRef]);
+
+  if (!count) return null;
+
+  return (
+    <select
+      className="sub-pick"
+      value={selected}
+      onChange={onPick}
+      title="Subtitle track"
+      aria-label="Subtitle track"
+    >
+      <option value="off">subs off</option>
+      {subtitles!.map((s, i) => (
+        <option key={`${i}-${s.url}`} value={String(i)}>
+          {s.lang || `subtitles ${i + 1}`}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function Controls({ link, index, total, muted, toggleMute, onDownload, downloadState, videoRef, subtitles }: {
   link: StreamDto;
   index: number;
   total: number;
@@ -176,6 +244,8 @@ function Controls({ link, index, total, muted, toggleMute, onDownload, downloadS
   toggleMute: () => void;
   onDownload: () => void;
   downloadState: string | null;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  subtitles?: SubtitleDto[];
 }) {
   return (
     <div className="player-controls small mono muted">
@@ -183,6 +253,7 @@ function Controls({ link, index, total, muted, toggleMute, onDownload, downloadS
         {index + 1}/{total} · {link.source} · {link.quality > 0 ? `${link.quality}p` : link.linkType}
       </span>
       <span>
+        <SubtitlePicker videoRef={videoRef} subtitles={subtitles} />{" "}
         <button onClick={toggleMute}>{muted ? "unmute" : "mute"}</button>{" "}
         <button onClick={onDownload} disabled={downloadState === "queueing…"}>
           {downloadState ?? "⬇ download"}
@@ -295,10 +366,67 @@ function useProgressBinding(
   return { videoRef, progressRef };
 }
 
+/**
+ * Player keyboard shortcuts (space play/pause, arrows ±5s, PageUp/Down ±30s,
+ * m mute, f fullscreen). Ignored while typing in inputs/selects.
+ */
+function useKeyboardControls(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  setMutedBoth: (m: boolean) => void,
+) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
+      const video = videoRef.current;
+      if (!video) return;
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          if (video.paused) video.play().catch(() => {});
+          else video.pause();
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          video.currentTime = Math.max(0, video.currentTime - 5);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 5);
+          break;
+        case "PageUp":
+        case "PageDown": {
+          e.preventDefault();
+          const step = e.key === "PageUp" ? 30 : -30;
+          const clamped = Math.min(video.duration || Infinity, Math.max(0, video.currentTime + step));
+          video.currentTime = clamped;
+          break;
+        }
+        case "m":
+        case "M":
+          setMutedBoth(!video.muted);
+          break;
+        case "f":
+        case "F":
+          if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+          else video.requestFullscreen?.().catch(() => {});
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [videoRef, setMutedBoth]);
+}
+
 function HlsPlayer(props: SharedPlayerProps) {
   const { link, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
   const { videoRef, progressRef } = useProgressBinding(link, reportProgress);
   const [mutedLocal, setMutedLocal] = useState(muted);
+  const setMutedBoth = useCallback((m: boolean) => {
+    setMutedLocal(m);
+    setMuted(m);
+  }, [setMuted]);
+  useKeyboardControls(videoRef, setMutedBoth);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -341,6 +469,8 @@ function HlsPlayer(props: SharedPlayerProps) {
         }}
         onDownload={onDownload}
         downloadState={downloadState}
+        videoRef={videoRef}
+        subtitles={subtitles}
       />
     </div>
   );
@@ -350,6 +480,11 @@ function NativePlayer(props: SharedPlayerProps) {
   const { link, muted, setMuted, reportProgress, resumePosition, subtitles, onFail, index, total, onDownload, downloadState } = props;
   const { videoRef, progressRef } = useProgressBinding(link, reportProgress);
   const [mutedLocal, setMutedLocal] = useState(muted);
+  const setMutedBoth = useCallback((m: boolean) => {
+    setMutedLocal(m);
+    setMuted(m);
+  }, [setMuted]);
+  useKeyboardControls(videoRef, setMutedBoth);
 
   // resume position may arrive before or after bind — feed it to the controller
   useEffect(() => {
@@ -381,6 +516,8 @@ function NativePlayer(props: SharedPlayerProps) {
         }}
         onDownload={onDownload}
         downloadState={downloadState}
+        videoRef={videoRef}
+        subtitles={subtitles}
       />
     </div>
   );

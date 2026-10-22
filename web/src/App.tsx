@@ -6,6 +6,7 @@ import { DetailContent } from "./pages/DetailContent";
 import { LibraryPage } from "./pages/LibraryPage";
 import { useQuery } from "@tanstack/react-query";
 import ReposPage from "./pages/ReposPage";
+import SettingsPage from "./pages/SettingsPage";
 import { getHealth, setAuthToken } from "./lib/api";
 
 async function fetchHealth(): Promise<{ ok: boolean; version: string; libraryAvailable: string }> {
@@ -87,7 +88,7 @@ export default function App() {
           <Route path="/detail" element={<DetailContent />} />
           <Route path="/repos" element={<ReposPage />} />
           <Route path="/library" element={<LibraryPage />} />
-          <Route path="/settings" element={<Placeholder title="Settings" />} />
+          <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
@@ -95,11 +96,4 @@ export default function App() {
   );
 }
 
-function Placeholder({ title }: { title: string }) {
-  return (
-    <section>
-      <h1>{title}</h1>
-      <p className="muted">Coming in a later phase of the build plan.</p>
-    </section>
-  );
-}
+

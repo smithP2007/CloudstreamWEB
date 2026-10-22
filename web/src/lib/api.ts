@@ -68,6 +68,12 @@ export function setAuthToken(token: string): void {
   } catch { /* private mode: token lives only until reload */ }
 }
 
+export function clearAuthToken(): void {
+  try {
+    localStorage.removeItem("csweb.token");
+  } catch { /* ignore */ }
+}
+
 function authHeaders(): Record<string, string> {
   const t = authToken();
   return t ? { Authorization: `Bearer ${t}` } : {};

@@ -571,6 +571,17 @@ object Db {
         }
     }
 
+    /** Best-effort content-length from the HEAD probe, for UI percentages. */
+    fun setDownloadTotal(id: String, totalBytes: Long) {
+        conn.prepareStatement(
+            "UPDATE downloads SET total_bytes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND total_bytes IS NULL"
+        ).use { ps ->
+            ps.setLong(1, totalBytes)
+            ps.setString(2, id)
+            ps.executeUpdate()
+        }
+    }
+
     fun setDownloadDone(id: String, filePath: String, totalBytes: Long) {
         conn.prepareStatement(
             "UPDATE downloads SET state='DONE', file_path=?, total_bytes=?, downloaded_bytes=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"
